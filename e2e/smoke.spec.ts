@@ -3,8 +3,8 @@ import AxeBuilder from '@axe-core/playwright';
 
 test('entry page renders and creates a circle', async ({ page }) => {
 	await page.goto('/');
-	await expect(page.getByRole('heading', { name: 'Co-Intelligence Circle' })).toBeVisible();
-	await page.getByRole('button', { name: 'Open a circle' }).click();
+	await expect(page.getByRole('heading', { name: /find coherence/i })).toBeVisible();
+	await page.getByRole('button', { name: 'Open a circle' }).first().click();
 	await expect(page).toHaveURL(/\/room\/\d{6}#/);
 	await expect(page.getByRole('heading', { name: /Circle \d{6}/ })).toBeVisible();
 });

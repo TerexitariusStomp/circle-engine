@@ -1,6 +1,16 @@
 /* CIC design tokens — generated from design/tokens.json (source of truth).
    Values verified against deployed bundle 0.B0NZKGKX.css. */
 
+/* Fonts self-hosted verbatim from the deployed surfaces:
+   - circle.co-intelligence.online: Lato 300/400/700/900, EB Garamond variable
+   - co-intelligence.online (marketing/entry): Switzer Variable, Caveat,
+     EB Garamond variable + italic */
+@font-face {
+	font-family: 'Lato';
+	src: url('/fonts/Lato-300.woff2') format('woff2');
+	font-weight: 300;
+	font-display: swap;
+}
 @font-face {
 	font-family: 'Lato';
 	src: url('/fonts/Lato-400.woff2') format('woff2');
@@ -14,15 +24,42 @@
 	font-display: swap;
 }
 @font-face {
+	font-family: 'Lato';
+	src: url('/fonts/Lato-900.woff2') format('woff2');
+	font-weight: 900;
+	font-display: swap;
+}
+@font-face {
 	font-family: 'EB Garamond';
-	src: url('/fonts/EBGaramond-400.woff2') format('woff2');
-	font-weight: 400;
+	src: url('/fonts/EBGaramond-Variable.woff2') format('woff2');
+	font-weight: 400 800;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'EB Garamond';
+	src: url('/fonts/EBGaramond-Variable-Italic.woff2') format('woff2');
+	font-weight: 400 800;
+	font-style: italic;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Switzer';
+	src: url('/fonts/Switzer-Variable.woff2') format('woff2');
+	font-weight: 100 900;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Caveat';
+	src: url('/fonts/Caveat-Variable.woff2') format('woff2');
+	font-weight: 400 700;
 	font-display: swap;
 }
 
 :root {
 	--font-sans: 'Lato', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 	--font-serif: 'EB Garamond', Georgia, serif;
+	--font-entry: 'Switzer', var(--font-sans); /* marketing/entry surface */
+	--font-display: 'Caveat', 'EB Garamond', serif; /* handwritten accents */
 	--accent: #1abc9c;
 	--accent-deep: #14342f;
 	--fire: #d9823f;

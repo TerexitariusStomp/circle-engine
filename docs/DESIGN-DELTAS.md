@@ -17,3 +17,24 @@
 6. **Paid tier is additive** (B.14): client resources primary; Cloudflare
    engages only per-deficiency (NAT relay, oversized room, durable capture).
    Entitlements = signed VC-JWT scope claims, verified offline.
+
+## Entry surface (co-intelligence.online landing)
+
+The entry page mirrors the deployed marketing page — structure, copy, palette
+(ea-light: `#faf9f6` base, sand/sky/sage atmo blobs, feTurbulence grain), pill
+buttons, capsule form, benefit cards with the production SVG icons, and the
+brand logo — with these deliberate deviations:
+
+7. **No email capture.** Production's "Request early access" capsule is
+   re-purposed as the room-code join capsule (there is no backend to hold
+   addresses — that is the product, not a limitation). "Log in" removed; no
+   accounts exist. Steps rewritten for reality: Open → Invite → Gather.
+8. **AA contrast floor.** Production ships `--ea-mute:#8f8f8f` on `#faf9f6`
+   (3.07:1 — axe-serious). We keep it only for the 72px display heading (3:1
+   legal for large text) and use `#6e6e6e` (≥4.5:1) for small muted text.
+9. **Fonts**: entry surface uses Switzer Variable + Caveat + EB Garamond
+   variable (self-hosted copies of the deployed woff2 files); the room app
+   keeps Lato + EB Garamond exactly as deployed.
+10. **Brand**: `logo-b.svg`, `symbol-light.png` (512), `favicon.png` (64),
+    `og.png`, `manifest.webmanifest` copied verbatim from the deployed origin
+    (icon URLs repointed to local paths — no `/api/site-brand` exists here).
