@@ -32,6 +32,7 @@ export class RoomSession {
 	notes: NotesDoc;
 
 	selfMuted = $state(true); // join muted — never auto-open the mic
+	videoMuted = $state(true);
 	peers = $state<string[]>([]);
 	names = $state<Record<string, string>>({});
 	caps = $state<Record<string, Capability>>({});
@@ -39,6 +40,7 @@ export class RoomSession {
 	authorityId = $derived(authorityOf([this.selfId, ...this.peers]));
 	stickHolderId = $derived(this.stick.getSnapshot().context.holderId);
 	stickState = $derived(this.stick.getSnapshot().value);
+	stickCtx = $derived(this.stick.getSnapshot().context);
 	chatLog = $state<{ from: string; text: string; whisper?: boolean }[]>([]);
 	captions = $state<{ from: string; text: string; final: boolean }[]>([]);
 	raisedHands = $state<Set<string>>(new Set());
@@ -53,6 +55,34 @@ export class RoomSession {
 	localMedia: LocalMedia | null = null;
 	captionsAvailable = $state(false);
 	miloState = $state<'off' | 'standby' | 'listening' | 'speaking'>('off');
+
+	// --- production-parity room state (authored via signed ops; bridged to prod frames) ---
+	mode = $state<'open_round' | 'circle_round'>('circle_round');
+	direction = $state<'sunwise' | 'earthwise'>('sunwise');
+	heartMode = $state(false); // heart-sharing: recording + transcription forced off
+	lobbyEnabled = $state(false);
+	started = $state(true);
+	coHostIds = $state<string[]>([]);
+	hostLocks = $state<Record<string, boolean>>({});
+	miloWake = $state<'hey_milo' | 'click'>('click');
+	transcriptScope = $state<'off' | 'holder' | 'all'>('off'); // matches production default "Transcript off"
+	turnTimerMinutes = $state(0);
+	speakingTimerEveryone = $state(false);
+	trFanout = $state<string[]>([]);
+	appearance = $state<Record<string, string | undefined>>({});
+	ai = $state<{
+		name?: string; enabled?: boolean; transcription?: boolean; contextProcessing?: boolean;
+		instructions?: string; voice?: string; standby?: boolean; scope?: string; storeTranscript?: boolean;
+	}>({ name: 'Milo' });
+	waiting = $state<{ id: string; name: string; joinedAt: number }[]>([]);
+	peerMuted = $state<Record<string, { audio: boolean; video: boolean }>>({});
+	peerAway = $state<Set<string>>(new Set());
+	peerSharing = $state<Set<string>>(new Set());
+	notesText = $state('');
+	joinedAt = $state<Record<string, number>>({});
+	remoteMutedBy = $state<Record<string, 'audio' | 'video' | null>>({});
+	onReaction: ((kind: string, fromId: string, name: string) => void) | null = null;
+	onTranscript: ((entry: { id: string; at: number; name: string; text: string }) => void) | null = null;
 
 	private heartbeat = 0;
 	private pipeline = new CaptionPipeline();
@@ -80,7 +110,16 @@ export class RoomSession {
 		(globalThis as { __room?: RoomHandle }).__room = this.handle; // e2e/debug handle
 
 		this.handle.onPeerJoin((peerId) => {
-			this.peers = [...this.peers, peerId];
+			if (!this.peers.includes(peerId)) this.peers = [...this.peers, peerId];
+			this.joinedAt[peerId] = Date.now();
+			if (this.lobbyEnabled) {
+				// lobby: joiner enters the waiting room, not seats — admit moves them
+				this.handle.sendRealtime(
+					{ t: 'hello', name: displayName, cap: [bytesToHex(this.identity.publicKey), this.e2ee.publicKeyHex] },
+					peerId
+				);
+				return;
+			}
 			this.handle.sendRealtime(
 				{ t: 'hello', name: displayName, cap: [bytesToHex(this.identity.publicKey), this.e2ee.publicKeyHex] },
 				peerId // targeted hello so the joiner gets our keys
@@ -89,6 +128,11 @@ export class RoomSession {
 		});
 		this.handle.onPeerLeave((peerId) => {
 			this.peers = this.peers.filter((p) => p !== peerId);
+			this.waiting = this.waiting.filter((w) => w.id !== peerId);
+			this.peerAway.delete(peerId);
+			this.peerSharing.delete(peerId);
+			this.peerMuted = { ...this.peerMuted, [peerId]: undefined as never };
+			delete this.peerMuted[peerId];
 			delete this.remoteStreams[peerId];
 			dropPeerKey(peerId);
 			this.syncSeats();
@@ -125,15 +169,16 @@ export class RoomSession {
 		return {
 			epoch: this.oplog.epoch,
 			config: {
-				mode: 'circle_round', direction: 'sunwise',
-				speakingTimerEveryone: false, heartMode: false,
-				transcriptScope: 'holder', recording: this.recording,
+				mode: this.mode, direction: this.direction,
+				speakingTimerEveryone: this.speakingTimerEveryone, heartMode: this.heartMode,
+				transcriptScope: this.transcriptScope, recording: this.recording,
 				maxSeats: 12, questionMoments: true
 			},
 			seats: {}, occupants: {},
 			stick: {
 				state: this.stickState === 'held' ? 'held' : 'on_table',
-				holderId: this.stickHolderId, atSeatOf: null, resumeTo: null, questionActive: false
+				holderId: this.stickHolderId, atSeatOf: this.stickCtx.atSeatOf,
+				resumeTo: this.stickCtx.resumeTo, questionActive: this.stickState === 'question'
 			},
 			recording: { active: this.recording, startedBy: null, consentRequired: true },
 			authorityId: this.authorityId,
@@ -147,10 +192,12 @@ export class RoomSession {
 	}
 
 	private syncSeats() {
-		const seats = [this.selfId, ...this.peers].sort();
+		const waitingIds = new Set(this.waiting.map((w) => w.id));
+		const seats = [this.selfId, ...this.peers.filter((p) => !waitingIds.has(p))].sort();
 		this.stick.send({ type: 'SEATS_SET', seats });
 		this.roles = electAll(Object.values(this.caps));
-		void this.ensureMilo();
+		// milo brain is elected now, but the ~100MB GGUF loads lazily on first address
+		if (this.roles?.['milo-brain'] === this.selfId && this.miloState === 'off') this.miloState = 'standby';
 	}
 
 	private async rotateKeys(kind: 'join' | 'leave', peerId: string) {
@@ -203,6 +250,46 @@ export class RoomSession {
 			case 'breakout-return':
 				void this.leaveBreakout();
 				break;
+			case 'away':
+				if (msg.on) this.peerAway = new Set([...this.peerAway, peerId]);
+				else { this.peerAway.delete(peerId); this.peerAway = new Set(this.peerAway); }
+				break;
+			case 'sharing':
+				if (msg.on) this.peerSharing = new Set([...this.peerSharing, peerId]);
+				else { this.peerSharing.delete(peerId); this.peerSharing = new Set(this.peerSharing); }
+				break;
+			case 'rename':
+				this.names[peerId] = msg.name;
+				break;
+			case 'muted':
+				this.peerMuted = { ...this.peerMuted, [peerId]: { audio: msg.audio, video: msg.video } };
+				break;
+			case 'notes':
+				this.notesText = msg.text;
+				break;
+			case 'ask-ai':
+				if (msg.text) void this.maybeMilo(`milo ${msg.text}`);
+				else void this.maybeMilo('milo check in');
+				break;
+			case 'reaction-kind':
+				this.onReaction?.(msg.kind, peerId, this.names[peerId] ?? 'Peer');
+				break;
+			case 'lobby-join':
+				if (this.lobbyEnabled && !this.waiting.some((w) => w.id === peerId)) {
+					this.waiting = [...this.waiting, { id: peerId, name: msg.name, joinedAt: Date.now() }]
+						.sort((a, b) => a.joinedAt - b.joinedAt);
+				}
+				break;
+			case 'admit': {
+				const w = this.waiting.find((x) => x.id === msg.to);
+				if (w) {
+					this.waiting = this.waiting.filter((x) => x.id !== msg.to);
+					this.syncSeats();
+				}
+				break;
+			}
+			case 'breakout-move':
+				break; // informational — peer's channel change
 			case 'recording-consent':
 				if (msg.state === 'pending') this.consentAsked = true;
 				else this.consents[peerId] = msg.state;
@@ -219,10 +306,68 @@ export class RoomSession {
 		switch (env.op.t) {
 			case 'stick-request': this.stick.send({ type: 'REQUEST', by: env.senderId }); break;
 			case 'stick-pass': this.stick.send({ type: 'PASS' }); break;
+			case 'stick-give': this.stick.send({ type: 'GIVE', to: env.op.to }); break;
 			case 'stick-table': this.stick.send({ type: 'TABLE' }); break;
 			case 'stick-resume': this.stick.send({ type: 'QUESTION_END' }); break;
-			case 'mode-set': this.stick.send({ type: 'MODE_SET', mode: env.op.mode }); break;
-			case 'direction-set': this.stick.send({ type: 'DIRECTION_SET', direction: env.op.direction }); break;
+			case 'mode-set': this.mode = env.op.mode; this.stick.send({ type: 'MODE_SET', mode: env.op.mode }); break;
+			case 'direction-set': this.direction = env.op.direction; this.stick.send({ type: 'DIRECTION_SET', direction: env.op.direction }); break;
+			case 'heart-set':
+				this.heartMode = env.op.on;
+				// invariant: heart-sharing forces recording + transcription off
+				if (env.op.on) {
+					if (this.recording) { this.recording = false; void this.recorder.stop(); }
+					this.captionsAvailable = false;
+					this.captionTap?.close(); this.captionTap = null;
+					// pipeline has no close — recognizer refs die with the tap
+				}
+				break;
+			case 'lobby-set': this.lobbyEnabled = env.op.enabled; this.syncSeats(); break;
+			case 'co-host-set': {
+				const target = env.op.id;
+				this.coHostIds = env.op.on
+					? [...new Set([...this.coHostIds, target])]
+					: this.coHostIds.filter((id) => id !== target);
+				break;
+			}
+			case 'started-set': this.started = env.op.on; break;
+			case 'host-locks-set': this.hostLocks = { ...env.op.locks }; break;
+			case 'appearance-set': {
+				const { t: _t, ...patch } = env.op;
+				this.appearance = { ...this.appearance, ...patch };
+				break;
+			}
+			case 'ai-set': {
+				const { t: _t, ...patch } = env.op;
+				this.ai = { ...this.ai, ...patch };
+				break;
+			}
+			case 'milo-wake-set': this.miloWake = env.op.mode; break;
+			case 'mute-set':
+				if (env.op.id === this.selfId) {
+					// remote can never force-open — only force-close
+					if (env.op.on && env.op.kind === 'audio') this.setSelfMuted(true);
+					if (env.op.on && env.op.kind === 'video') this.setVideoMuted(true);
+					this.remoteMutedBy[env.op.kind] = env.op.on ? env.op.kind : null;
+				}
+				break;
+			case 'tr-fanout-set': this.trFanout = [...env.op.lanes]; break;
+			case 'turn-timer-set': this.turnTimerMinutes = env.op.minutes; break;
+			case 'config-set': {
+				const p = env.op.patch;
+				if (p.mode) this.stick.send({ type: 'MODE_SET', mode: p.mode });
+				if (p.direction) this.stick.send({ type: 'DIRECTION_SET', direction: p.direction });
+				if (p.speakingTimerEveryone !== undefined) this.speakingTimerEveryone = p.speakingTimerEveryone;
+				if (p.speakingTimerSeconds !== undefined) this.turnTimerMinutes = Math.round(p.speakingTimerSeconds / 60);
+				if (p.transcriptScope !== undefined) {
+					this.transcriptScope = p.transcriptScope;
+					if (p.transcriptScope === 'off') {
+						this.captionsAvailable = false;
+						this.captionTap?.close(); this.captionTap = null;
+					} else if (!this.captionsAvailable) void this.startCaptions();
+				}
+				if (p.recording === false && this.recording) { this.recording = false; void this.recorder.stop(); }
+				break;
+			}
 			case 'recording-start': this.recording = true; void this.maybeRecord(); break;
 			case 'recording-stop': this.recording = false; void this.recorder.stop(); break;
 			case 'room-end': void this.leave(); break;
@@ -234,7 +379,7 @@ export class RoomSession {
 		}
 	}
 
-	private emitOp(op: OpEnvelope['op']) {
+	emitOp(op: OpEnvelope['op']) {
 		const unsigned = { v: 1, t: 'op', opId: crypto.randomUUID(), roomEpoch: this.oplog.epoch, senderId: this.selfId, sentAt: Date.now(), op };
 		const sig = this.identity.sign(new TextEncoder().encode(JSON.stringify(unsigned)));
 		const env = { ...unsigned, sig } as OpEnvelope;
@@ -242,10 +387,13 @@ export class RoomSession {
 		this.handle.sendOp(op, sig, this.oplog.epoch);
 	}
 
-	async join() {
-		this.localMedia = await capture({ video: true, audio: true });
-		this.localMedia.setMuted(this.selfMuted);
-		this.handle.addStream(this.localMedia.stream);
+	async join(opts: { capture?: boolean } = {}) {
+		const wantCapture = opts.capture !== false;
+		if (wantCapture) {
+			this.localMedia = await capture({ video: true, audio: true });
+			this.localMedia.setMuted(this.selfMuted);
+			this.handle.addStream(this.localMedia.stream);
+		}
 		wireE2EE(this.handle, this.e2ee);
 		this.handle.sendRealtime({
 			t: 'hello', name: this.displayName,
@@ -253,12 +401,17 @@ export class RoomSession {
 		});
 		this.caps[this.selfId] = await measureCapability(this.selfId);
 		this.syncSeats();
-		void this.startCaptions();
+	}
+
+	/** production-frontend path: media arrives over the loopback SFU — publish it to the mesh */
+	publishLocal(stream: MediaStream) {
+		this.handle.addStream(stream);
+		if (this.transcriptScope !== 'off' && !this.captionsAvailable) void this.startCaptions(stream);
 	}
 
 	/** tap local mic → resample to 16kHz mono → sherpa ASR → caption-update frames */
-	private async startCaptions() {
-		const audioTrack = this.localMedia?.stream.getAudioTracks()[0];
+	private async startCaptions(fromStream?: MediaStream) {
+		const audioTrack = (fromStream ?? this.localMedia?.stream)?.getAudioTracks()[0];
 		if (!audioTrack) return;
 		if (!(await this.pipeline.init())) return; // model packs absent — degrade visibly
 		this.captionsAvailable = true;
@@ -268,7 +421,7 @@ export class RoomSession {
 			if (seg.final) void this.maybeMilo(seg.text);
 		};
 		const ctx = new AudioContext();
-		const src = ctx.createMediaStreamSource(this.localMedia!.stream);
+		const src = ctx.createMediaStreamSource(fromStream ?? this.localMedia!.stream);
 		const proc = ctx.createScriptProcessor(4096, 1, 1);
 		const mute = ctx.createGain();
 		mute.gain.value = 0; // tap only — never feed local mic back to speakers
@@ -287,9 +440,11 @@ export class RoomSession {
 		};
 	}
 
-	/** Milo is an elected role — init the LLM only on the milo-brain device */
+	/** Milo is an elected role — the model downloads only on first address, not on join */
+	private miloInitStarted = false;
 	private async ensureMilo() {
-		if (this.miloState !== 'off' || this.roles?.['milo-brain'] !== this.selfId) return;
+		if (this.miloInitStarted || this.roles?.['milo-brain'] !== this.selfId) return;
+		this.miloInitStarted = true;
 		const ok = await this.milo.init({
 			modelUrl: '/models/llm/SmolLM2-135M-Instruct-Q4_K_M.gguf',
 			maxContextTokens: 2048
@@ -312,6 +467,7 @@ export class RoomSession {
 		const match = text.trim().match(/^milo[\s,.:;-]+(.+)/i);
 		if (!match) return;
 		this.miloState = 'listening';
+		await this.ensureMilo();
 		await this.milo.ask(match[1], this.transcriptWindow);
 		this.miloState = this.milo.state;
 	}
@@ -405,8 +561,66 @@ export class RoomSession {
 	setSelfMuted(muted: boolean) {
 		this.selfMuted = muted;
 		this.localMedia?.setMuted(muted);
-		this.handle.sendRealtime({ t: 'mute-state', muted });
+		this.handle.sendRealtime({ t: 'muted', audio: muted, video: this.videoMuted });
 	}
+	setVideoMuted(muted: boolean) {
+		this.videoMuted = muted;
+		if (this.localMedia) for (const t of this.localMedia.stream.getVideoTracks()) t.enabled = !muted;
+		this.handle.sendRealtime({ t: 'muted', audio: this.selfMuted, video: muted });
+	}
+
+	// --- bridge-facing API (production frontend commands → signed ops / realtime) ---
+	broadcast(msg: RealtimeMessage) { this.handle.sendRealtime(msg); }
+	giveStick(to: string) { this.emitOp({ t: 'stick-give', to }); }
+	setMode(mode: 'open_round' | 'circle_round') { this.emitOp({ t: 'mode-set', mode }); }
+	setDirection(direction: 'sunwise' | 'earthwise') { this.emitOp({ t: 'direction-set', direction }); }
+	setHeart(on: boolean) { this.emitOp({ t: 'heart-set', on }); }
+	setLobby(on: boolean) { this.emitOp({ t: 'lobby-set', enabled: on }); }
+	setCoHost(id: string, on: boolean) { this.emitOp({ t: 'co-host-set', id, on }); }
+	setStarted(on: boolean) { this.emitOp({ t: 'started-set', on }); }
+	setHostLocks(locks: Record<string, boolean>) { this.emitOp({ t: 'host-locks-set', locks }); }
+	setAppearance(patch: Record<string, string>) { this.emitOp({ t: 'appearance-set', ...patch }); }
+	setAi(patch: Record<string, unknown>) { this.emitOp({ t: 'ai-set', ...patch }); }
+	setMiloWake(mode: 'hey_milo' | 'click') { this.emitOp({ t: 'milo-wake-set', mode }); }
+	forceMute(id: string, kind: 'audio' | 'video', on: boolean) { this.emitOp({ t: 'mute-set', id, kind, on }); }
+	setTrFanout(lanes: string[]) { this.emitOp({ t: 'tr-fanout-set', lanes }); }
+	setTurnTimer(minutes: number) { this.emitOp({ t: 'turn-timer-set', minutes }); }
+	setSpeakingTimerEveryone(on: boolean) { this.emitOp({ t: 'config-set', patch: { speakingTimerEveryone: on } }); }
+	setTranscription(on: boolean) { this.emitOp({ t: 'config-set', patch: { transcriptScope: on ? 'all' : 'off' } }); }
+	announceAway(on: boolean) {
+		this.handle.sendRealtime({ t: 'away', on });
+		if (on) this.peerAway = new Set([...this.peerAway, this.selfId]);
+		else { this.peerAway.delete(this.selfId); this.peerAway = new Set(this.peerAway); }
+	}
+	announceSharing(on: boolean, audio = false) {
+		this.handle.sendRealtime({ t: 'sharing', on, audio });
+		if (on) this.peerSharing = new Set([...this.peerSharing, this.selfId]);
+		else { this.peerSharing.delete(this.selfId); this.peerSharing = new Set(this.peerSharing); }
+	}
+	renameSelf(name: string) {
+		this.names[this.selfId] = name;
+		this.handle.sendRealtime({ t: 'rename', name });
+	}
+	saveNotes(text: string) {
+		this.notesText = text;
+		this.handle.sendRealtime({ t: 'notes', text });
+	}
+	askAi(text?: string) { this.handle.sendRealtime({ t: 'ask-ai', text }); void this.maybeMilo(`milo ${text ?? 'check in'}`); }
+	react(kind: string) {
+		this.handle.sendRealtime({ t: 'reaction-kind', kind, name: this.names[this.selfId] ?? this.displayName });
+		this.onReaction?.(kind, this.selfId, this.names[this.selfId] ?? this.displayName);
+	}
+	/** lobby: announce a joiner into the waiting list (prod waiting-join) */
+	announceLobbyJoin(name: string) { this.handle.sendRealtime({ t: 'lobby-join', name }); }
+	admitWaiting(id: string) {
+		const w = this.waiting.find((x) => x.id === id);
+		if (w) {
+			this.waiting = this.waiting.filter((x) => x.id !== id);
+			this.syncSeats();
+		}
+		this.handle.sendRealtime({ t: 'admit', to: id });
+	}
+	hopBreakout(channel: number) { this.handle.sendRealtime({ t: 'breakout-move', channel }); }
 
 	async leave() {
 		clearInterval(this.heartbeat);

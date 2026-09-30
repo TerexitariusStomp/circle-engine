@@ -31,6 +31,7 @@ type StickEvent =
 	| { type: 'THROW'; to: string } // open_round only
 	| { type: 'TABLE' } // holder returns stick to table
 	| { type: 'QUESTION_ASK'; by: string; to: string }
+	| { type: 'GIVE'; to: string } // holder/host hands the stick to a chosen seat (prod: give-stick / host-set-current)
 	| { type: 'QUESTION_END' }
 	| { type: 'HOLDER_LOST' } // seat emptied / peer gone (authority emits on deadline)
 	| { type: 'MODE_SET'; mode: 'open_round' | 'circle_round' }
@@ -96,6 +97,11 @@ export const stickMachine = setup({
 					guard: 'openRound',
 					target: 'held',
 					actions: assign({ holderId: ({ event }) => event.to })
+				},
+				GIVE: {
+					guard: { type: 'targetSeated', params: ({ event }) => ({ to: event.to }) },
+					target: 'held',
+					actions: assign({ holderId: ({ event }) => event.to })
 				}
 			}
 		},
@@ -136,6 +142,10 @@ export const stickMachine = setup({
 						atSeatOf: event.by, // the asker conceptually takes the floor
 						resumeTo: context.holderId // the questioned holder keeps the stick
 					}))
+				},
+				GIVE: {
+					guard: { type: 'targetSeated', params: ({ event }) => ({ to: event.to }) },
+					actions: assign({ holderId: ({ event }) => event.to })
 				}
 			}
 		},

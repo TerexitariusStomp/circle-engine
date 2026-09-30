@@ -86,17 +86,15 @@ export class E2EESession {
 		const iAmAuthor = allIds[0] === this.room.selfId;
 		if (!iAmAuthor) return out;
 
-		const members: PeerIdentity[] = [
-			{ peerId: this.room.selfId, publicKey: this.ratchet.getIdentity().publicKey },
-			...this.members.values()
-		];
+		// startNewEpoch prepends our own identity — pass OTHER peers only
+		const peers = [...this.members.values()];
 		let announcements: EpochAnnouncement[] = [];
 		if (kind === 'join' && this.ratchet.epoch >= 0 && this.members.has(peerId)) {
 			announcements = await this.ratchet.rotateOnMemberChange({ kind: 'join', peer: this.members.get(peerId)! });
 		} else if (kind === 'leave') {
 			announcements = await this.ratchet.rotateOnMemberChange({ kind: 'leave', peerId });
 		} else {
-			announcements = await this.ratchet.startNewEpoch(members);
+			announcements = await this.ratchet.startNewEpoch(peers);
 		}
 		for (const a of announcements) out.set(a.forPeer, announcementToJson(a));
 

@@ -41,6 +41,7 @@ export const op = z.discriminatedUnion('t', [
 	z.object({ t: z.literal('seat-release') }),
 	z.object({ t: z.literal('stick-request'), question: z.boolean().optional() }),
 	z.object({ t: z.literal('stick-grant'), to: participantId }),
+	z.object({ t: z.literal('stick-give'), to: participantId }), // prod: give-stick — holder hands to a specific seat
 	z.object({ t: z.literal('stick-pass'), to: participantId }),
 	z.object({ t: z.literal('stick-table') }), // return to table
 	z.object({ t: z.literal('stick-resume') }), // holder returns after question moment
@@ -53,6 +54,38 @@ export const op = z.discriminatedUnion('t', [
 	z.object({ t: z.literal('room-end') }),
 	z.object({ t: z.literal('breakout-open'), count: z.number().int().min(1).max(8) }),
 	z.object({ t: z.literal('breakout-close') }),
+	z.object({ t: z.literal('heart-set'), on: z.boolean() }), // Heart-Sharing forces rec/transcription off
+	z.object({ t: z.literal('lobby-set'), enabled: z.boolean() }),
+	z.object({ t: z.literal('co-host-set'), id: participantId, on: z.boolean() }),
+	z.object({ t: z.literal('started-set'), on: z.boolean() }), // circle formally opened/closed by host
+	z.object({ t: z.literal('host-locks-set'), locks: z.record(z.string(), z.boolean()) }),
+	z.object({
+		t: z.literal('appearance-set'),
+		theme: z.string().max(40).optional(),
+		accent: z.string().max(40).optional(),
+		center: z.string().max(80).optional(),
+		miloVisual: z.string().max(80).optional(),
+		stick: z.string().max(80).optional(),
+		background: z.string().max(80).optional(),
+		backgroundColor: z.string().max(40).optional(),
+		panelColor: z.string().max(40).optional()
+	}),
+	z.object({
+		t: z.literal('ai-set'),
+		name: z.string().max(80).optional(),
+		enabled: z.boolean().optional(),
+		transcription: z.boolean().optional(),
+		contextProcessing: z.boolean().optional(),
+		instructions: z.string().max(4000).optional(),
+		voice: z.string().max(80).optional(),
+		standby: z.boolean().optional(),
+		scope: z.string().max(40).optional(),
+		storeTranscript: z.boolean().optional()
+	}),
+	z.object({ t: z.literal('milo-wake-set'), mode: z.enum(['hey_milo', 'click']) }),
+	z.object({ t: z.literal('mute-set'), id: participantId, kind: z.enum(['audio', 'video']), on: z.boolean() }), // authority remote-mute — can never force-open
+	z.object({ t: z.literal('tr-fanout-set'), lanes: z.array(z.string().max(12)).max(16) }),
+	z.object({ t: z.literal('turn-timer-set'), minutes: z.number().int().min(0).max(120) }),
 	z.object({ t: z.literal('erasure'), scope: z.enum(['self', 'participant']), target: participantId })
 ]);
 export type Op = z.infer<typeof op>;
@@ -90,8 +123,17 @@ export const realtimeMessage = z.discriminatedUnion('t', [
 	z.object({ t: z.literal('recording-state'), active: z.boolean() }),
 	z.object({ t: z.literal('authority-heartbeat'), leaseUntil: z.number().int() }),
 	z.object({ t: z.literal('breakout-assign'), room: z.string(), to: participantId }),
+	z.object({ t: z.literal('breakout-move'), channel: z.number().int().min(0).max(64) }),
 	z.object({ t: z.literal('breakout-return') }),
 	z.object({ t: z.literal('breakout-broadcast'), text: z.string().max(500) }),
+	z.object({ t: z.literal('away'), on: z.boolean() }),
+	z.object({ t: z.literal('sharing'), on: z.boolean(), audio: z.boolean().optional() }), // screen share presence
+	z.object({ t: z.literal('rename'), name: z.string().max(80) }),
+	z.object({ t: z.literal('muted'), audio: z.boolean(), video: z.boolean() }), // per-kind self-declared state
+	z.object({ t: z.literal('notes'), text: z.string().max(200_000) }), // collaborative notes (last-writer)
+	z.object({ t: z.literal('ask-ai'), text: z.string().max(2000).optional() }), // explicit Milo ask
+	z.object({ t: z.literal('reaction-kind'), kind: z.string().max(24), name: z.string().max(80).optional() }),
+	z.object({ t: z.literal('lobby-join'), name: z.string().max(80) }), // announce self into waiting room
 	z.object({ t: z.literal('milo-state'), state: z.enum(['off', 'standby', 'listening', 'speaking']) }),
 	z.object({ t: z.literal('e2ee-key'), epoch, data: z.string() }), // wrapped EpochAnnouncement (JSON)
 	z.object({ t: z.literal('sas'), emoji: z.string().max(16) }) // emoji fingerprint verify
