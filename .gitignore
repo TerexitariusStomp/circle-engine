@@ -1,4 +1,7 @@
 node_modules
-.env
-dist
+build
 .svelte-kit
+/test-results
+/playwright-report
+*.tar.gz
+.DS_Store

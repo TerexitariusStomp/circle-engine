@@ -1,0 +1,129 @@
+import { z } from 'zod';
+
+/**
+ * CIC wire protocol — zod is the single source of truth.
+ * Message-type names verified against the deployed production bundle
+ * (see docs/PROTOCOL.md for the extraction evidence).
+ *
+ * Envelope: { v, t, seq, roomEpoch, senderId, sig }
+ * Every op is signed (Ed25519 over canonical JSON) and carries the room
+ * epoch it was authored under — stale-epoch ops are rejected.
+ */
+
+export const PROTOCOL_VERSION = 1 as const;
+
+export const participantId = z.string().min(8).max(64); // opaque, random per room
+export const seatIndex = z.number().int().min(0).max(63);
+export const epoch = z.number().int().nonnegative();
+export const opId = z.string().min(16);
+
+export const roomMode = z.enum(['open_round', 'circle_round']);
+export const direction = z.enum(['sunwise', 'earthwise']); // clockwise / counter-clockwise
+export const stickState = z.enum(['on_table', 'held', 'in_pass', 'question']);
+export const transcriptScope = z.enum(['off', 'holder', 'all']);
+export const recordingConsent = z.enum(['pending', 'granted', 'denied']);
+
+export const roomConfig = z.object({
+	mode: roomMode,
+	direction,
+	speakingTimerSeconds: z.number().int().positive().max(3600).optional(),
+	speakingTimerEveryone: z.boolean(),
+	heartMode: z.boolean(),
+	transcriptScope,
+	recording: z.boolean(),
+	maxSeats: z.number().int().min(2).max(64),
+	questionMoments: z.boolean()
+});
+
+/** ops admitted to the signed op-log (authoritative room state transitions) */
+export const op = z.discriminatedUnion('t', [
+	z.object({ t: z.literal('seat-claim'), seat: seatIndex }),
+	z.object({ t: z.literal('seat-release') }),
+	z.object({ t: z.literal('stick-request'), question: z.boolean().optional() }),
+	z.object({ t: z.literal('stick-grant'), to: participantId }),
+	z.object({ t: z.literal('stick-pass'), to: participantId }),
+	z.object({ t: z.literal('stick-table') }), // return to table
+	z.object({ t: z.literal('stick-resume') }), // holder returns after question moment
+	z.object({ t: z.literal('mode-set'), mode: roomMode }),
+	z.object({ t: z.literal('direction-set'), direction }),
+	z.object({ t: z.literal('config-set'), patch: roomConfig.partial() }),
+	z.object({ t: z.literal('consent'), kind: z.enum(['recording', 'transcript']), state: recordingConsent }),
+	z.object({ t: z.literal('recording-start') }),
+	z.object({ t: z.literal('recording-stop') }),
+	z.object({ t: z.literal('room-end') }),
+	z.object({ t: z.literal('erasure'), scope: z.enum(['self', 'participant']), target: participantId })
+]);
+export type Op = z.infer<typeof op>;
+
+/** signed op-log envelope — the ONLY authoritative state channel */
+export const opEnvelope = z.object({
+	v: z.literal(PROTOCOL_VERSION),
+	t: z.literal('op'),
+	opId,
+	roomEpoch: epoch,
+	senderId: participantId,
+	sentAt: z.number().int(), // authority clock, not wall clock
+	op,
+	sig: z.string() // Ed25519 signature over canonical(op without sig)
+});
+export type OpEnvelope = z.infer<typeof opEnvelope>;
+
+/** non-authoritative realtime messages (presence/ephemeral channels) */
+export const realtimeMessage = z.discriminatedUnion('t', [
+	z.object({ t: z.literal('hello'), name: z.string().max(80), cap: z.array(z.string()) }),
+	z.object({ t: z.literal('welcome'), roomEpoch: epoch, yourId: participantId }),
+	z.object({ t: z.literal('snapshot'), state: z.string() }), // encrypted checkpoint blob ref
+	z.object({ t: z.literal('delta') }),
+	z.object({ t: z.literal('lobby-request'), name: z.string().max(80), proof: z.string().optional() }),
+	z.object({ t: z.literal('admit'), to: participantId }),
+	z.object({ t: z.literal('hand-raise') }),
+	z.object({ t: z.literal('hand-lower') }),
+	z.object({ t: z.literal('mute-state'), muted: z.boolean() }),
+	z.object({ t: z.literal('reaction'), emoji: z.string().max(8) }),
+	z.object({ t: z.literal('chat'), text: z.string().max(4000), whisperTo: participantId.optional() }),
+	z.object({ t: z.literal('caption-update'), text: z.string().max(500), final: z.boolean(), lang: z.string().max(12) }),
+	z.object({ t: z.literal('transcript-line'), seq: z.number().int(), hash: z.string(), scope: transcriptScope }),
+	z.object({ t: z.literal('recorder-heartbeat'), role: z.enum(['primary', 'standby']) }),
+	z.object({ t: z.literal('authority-heartbeat'), leaseUntil: z.number().int() }),
+	z.object({ t: z.literal('breakout-assign'), room: z.string() }),
+	z.object({ t: z.literal('breakout-return') }),
+	z.object({ t: z.literal('milo-state'), state: z.enum(['off', 'standby', 'listening', 'speaking']) }),
+	z.object({ t: z.literal('e2ee-key'), epoch, keyRef: z.string() }), // SFrame sender-key announcement
+	z.object({ t: z.literal('sas'), emoji: z.string().max(16) }) // emoji fingerprint verify
+]);
+export type RealtimeMessage = z.infer<typeof realtimeMessage>;
+
+/** room state snapshot — derived from op-log replay; persisted as checkpoint */
+export const roomState = z.object({
+	epoch,
+	config: roomConfig,
+	seats: z.record(z.string(), participantId.nullable()), // seat index -> occupant
+	occupants: z.record(z.string(), z.object({
+		name: z.string(),
+		raisedHand: z.boolean(),
+		selfMuted: z.boolean(),
+		autoMuted: z.boolean(),
+		remotelyMuted: z.boolean(),
+		joinedAtOp: opId
+	})),
+	stick: z.object({
+		state: stickState,
+		holderId: participantId.nullable(),
+		atSeatOf: participantId.nullable(), // seat the stick conceptually rests at during question
+		resumeTo: participantId.nullable(),
+		questionActive: z.boolean()
+	}),
+	recording: z.object({
+		active: z.boolean(),
+		startedBy: participantId.nullable(),
+		consentRequired: z.boolean()
+	}),
+	authorityId: participantId.nullable(),
+	roles: z.object({
+		miloBrain: participantId.nullable(),
+		miloVoice: participantId.nullable(),
+		recorderPrimary: participantId.nullable(),
+		recorderStandby: participantId.nullable()
+	})
+});
+export type RoomState = z.infer<typeof roomState>;
