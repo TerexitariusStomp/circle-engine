@@ -38,3 +38,25 @@ brand logo — with these deliberate deviations:
 10. **Brand**: `logo-b.svg`, `symbol-light.png` (512), `favicon.png` (64),
     `og.png`, `manifest.webmanifest` copied verbatim from the deployed origin
     (icon URLs repointed to local paths — no `/api/site-brand` exists here).
+
+## Production frontend bridge (vendored app)
+
+- The room surface is the **byte-identical vendored production SvelteKit bundle**
+  (`static/cic/` + `static/vendor/cic/` CSS) mounted via `CicApp.svelte`; the local
+  engine is its entire backend in-process (`src/lib/bridge/*`).
+- `LocalSocket` (`src/lib/bridge/localSocket.ts`) is a real in-process transport —
+  frames are parsed and executed against `RoomSession`, nothing is simulated.
+- Media uses one shared `RTCPeerConnection` per client (`SfuLoopback`) matching
+  the production SFU contract (`publish`/`subscribe`/`sfu-offer`/`renegotiate-answer`,
+  `pulls[{mid,ownerId,kind,sessionId}]`); publish tracks relay into the Trystero mesh,
+  mesh streams are offered back as pull m-lines.
+- Sherpa-ONNX pack loaders had colliding top-level `class ExitStatus`/`ExceptionInfo`
+  declarations — vendored files carry per-pack suffixes (`ExitStatusAsr`, …).
+- `.lottie` ambience assets and `caption-capture-worklet.js`/`dg-capture-worklet.js`
+  are vendored verbatim from the live origin; `dotlottie-player.wasm` is served locally.
+- External provider lanes (Deepgram/OpenAI/Gemini STT, cloud translation, rec upload
+  to their storage) are refused with honest error frames or routed to the local
+  recorder — no traffic leaves for `co-intelligence.online` origins.
+- Honest deviations: `welcome`/`snapshot` are emitted from local session state only;
+  opener grants/`?grant=` are ignored (no dashboard exists); paid STT/translation
+  provider selection collapses to on-device sherpa.

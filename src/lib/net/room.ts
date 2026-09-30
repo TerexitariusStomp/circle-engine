@@ -21,7 +21,7 @@ export interface RoomHandle {
 	onPeerJoin: (fn: (peerId: string) => void) => void;
 	onPeerLeave: (fn: (peerId: string) => void) => void;
 	onPeerStream: (fn: (stream: MediaStream, peerId: string) => void) => void;
-	addStream: (stream: MediaStream) => void;
+	addStream: (stream: MediaStream, targets?: string[]) => void;
 	removeStream: (stream: MediaStream) => void;
 	leave: () => Promise<void>;
 	raw: Room;
@@ -61,7 +61,7 @@ export function openRoom(roomSecret: string): RoomHandle {
 			onPeerJoin: mkListenerSet(room.onPeerJoin),
 		onPeerLeave: mkListenerSet(room.onPeerLeave),
 		onPeerStream: mkListenerSet(room.onPeerStream),
-		addStream: (s) => room.addStream(s),
+		addStream: (s, targets) => room.addStream(s, targets),
 		removeStream: (s) => room.removeStream(s),
 		leave: () => room.leave(),
 		raw: room

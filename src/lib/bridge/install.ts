@@ -14,7 +14,7 @@
  */
 import { RoomSocket } from './roomBridge.svelte';
 import { CaptionSocket } from './stt';
-import { LocalSocket } from './fakeSocket';
+import { LocalSocket } from './localSocket';
 import type { RoomSession } from '../state/room.svelte';
 
 const LS_PREFIX = 'cic.ui.';

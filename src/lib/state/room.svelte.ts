@@ -91,6 +91,7 @@ export class RoomSession {
 	private ttsReady: boolean | null = null;
 	private transcriptWindow: string[] = [];
 	private captionTap: { close(): void } | null = null;
+	private publishedStreams = new Set<MediaStream>();
 
 	constructor(
 		public roomSecret: string,
@@ -124,6 +125,9 @@ export class RoomSession {
 				{ t: 'hello', name: displayName, cap: [bytesToHex(this.identity.publicKey), this.e2ee.publicKeyHex] },
 				peerId // targeted hello so the joiner gets our keys
 			);
+			// trystero addStream only reaches already-connected peers — re-offer
+			// our published streams to late joiners or they never see our media
+			for (const stream of this.publishedStreams) this.handle.addStream(stream, [peerId]);
 			this.syncSeats();
 		});
 		this.handle.onPeerLeave((peerId) => {
@@ -140,6 +144,7 @@ export class RoomSession {
 			this.stick.send({ type: 'HOLDER_LOST' }); // orphan deadline: authority refines timing
 		});
 		this.handle.onPeerStream((stream, peerId) => {
+			console.debug('[engine] remote stream', peerId, stream.getTracks().map((t) => t.kind).join('+'));
 			this.remoteStreams[peerId] = stream;
 		});
 		this.handle.onRealtime((msg, peerId) => this.onRealtime(msg, peerId));
@@ -392,6 +397,7 @@ export class RoomSession {
 		if (wantCapture) {
 			this.localMedia = await capture({ video: true, audio: true });
 			this.localMedia.setMuted(this.selfMuted);
+			this.publishedStreams.add(this.localMedia.stream);
 			this.handle.addStream(this.localMedia.stream);
 		}
 		wireE2EE(this.handle, this.e2ee);
@@ -405,6 +411,7 @@ export class RoomSession {
 
 	/** production-frontend path: media arrives over the loopback SFU — publish it to the mesh */
 	publishLocal(stream: MediaStream) {
+		this.publishedStreams.add(stream);
 		this.handle.addStream(stream);
 		if (this.transcriptScope !== 'off' && !this.captionsAvailable) void this.startCaptions(stream);
 	}

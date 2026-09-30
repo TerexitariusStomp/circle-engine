@@ -5,7 +5,7 @@
  * `caption-update` frames back over the room socket (and to the mesh so
  * remote bridges show our speech too). No audio ever leaves the device.
  */
-import { LocalSocket } from './fakeSocket';
+import { LocalSocket } from './localSocket';
 import { CaptionPipeline } from '../ai/speech';
 import type { RoomSession } from '../state/room.svelte';
 

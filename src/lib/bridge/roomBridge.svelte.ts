@@ -8,7 +8,7 @@
  * Every client→server command is executed against real session state —
  * nothing is acknowledged without taking effect.
  */
-import { LocalSocket } from './fakeSocket';
+import { LocalSocket } from './localSocket';
 import { RoomSession } from '../state/room.svelte';
 import { roomSecretFromCode } from '../net/room';
 import { SfuLoopback } from './sfu';
