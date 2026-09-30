@@ -10,8 +10,10 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
-    "policy:build": "opa build -t wasm -e cic/allow -e cic/deny src/lib/policy/cic.rego -o /tmp/cic-policy.tar.gz && tar -xzf /tmp/cic-policy.tar.gz -C /tmp policy.wasm && mv /tmp/policy.wasm static/policy/cic.wasm",
-    "test:e2e": "playwright test --project=chromium"
+    "policy:build": "rm -rf /tmp/cic-pol && mkdir -p /tmp/cic-pol && opa build -t wasm -e cic/allow -e cic/deny src/lib/policy/cic.rego -o /tmp/cic-pol/policy.tar.gz && tar -xzf /tmp/cic-pol/policy.tar.gz -C /tmp/cic-pol policy.wasm && cp /tmp/cic-pol/policy.wasm static/policy/cic.wasm",
+    "test:e2e": "playwright test --project=chromium",
+    "models:fetch": "bash scripts/fetch-models.sh",
+    "models:fetch:heavy": "FETCH_HEAVY=1 bash scripts/fetch-models.sh"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
@@ -57,7 +59,6 @@
     "qr-code-styling": "^1.8.0",
     "qr-scanner": "^1.4.2",
     "sframe-ratchet": "^0.5.8",
-    "sherpa-onnx": "^1.12.0",
     "streamsaver": "^2.0.6",
     "svelte-sonner": "^0.3.28",
     "trystero": "^0.21.5",

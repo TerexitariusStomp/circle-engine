@@ -5,3 +5,5 @@ build
 /playwright-report
 *.tar.gz
 .DS_Store
+static/models/
+static/wllama/

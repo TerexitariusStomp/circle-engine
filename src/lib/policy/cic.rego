@@ -62,6 +62,16 @@ deny contains "mode change requires manager" if {
 	not input.actor.canManageRoom
 }
 
+deny contains "breakout requires manager" if {
+	input.op.t == "breakout-open"
+	not input.actor.canManageRoom
+}
+
+deny contains "breakout close requires manager" if {
+	input.op.t == "breakout-close"
+	not input.actor.canManageRoom
+}
+
 # --- erasure ----------------------------------------------------------------
 deny contains "erasure only self or authority" if {
 	input.op.t == "erasure"

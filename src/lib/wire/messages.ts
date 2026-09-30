@@ -51,6 +51,8 @@ export const op = z.discriminatedUnion('t', [
 	z.object({ t: z.literal('recording-start') }),
 	z.object({ t: z.literal('recording-stop') }),
 	z.object({ t: z.literal('room-end') }),
+	z.object({ t: z.literal('breakout-open'), count: z.number().int().min(1).max(8) }),
+	z.object({ t: z.literal('breakout-close') }),
 	z.object({ t: z.literal('erasure'), scope: z.enum(['self', 'participant']), target: participantId })
 ]);
 export type Op = z.infer<typeof op>;
@@ -84,11 +86,14 @@ export const realtimeMessage = z.discriminatedUnion('t', [
 	z.object({ t: z.literal('caption-update'), text: z.string().max(500), final: z.boolean(), lang: z.string().max(12) }),
 	z.object({ t: z.literal('transcript-line'), seq: z.number().int(), hash: z.string(), scope: transcriptScope }),
 	z.object({ t: z.literal('recorder-heartbeat'), role: z.enum(['primary', 'standby']) }),
+	z.object({ t: z.literal('recording-consent'), state: recordingConsent }), // prod-verbatim name
+	z.object({ t: z.literal('recording-state'), active: z.boolean() }),
 	z.object({ t: z.literal('authority-heartbeat'), leaseUntil: z.number().int() }),
-	z.object({ t: z.literal('breakout-assign'), room: z.string() }),
+	z.object({ t: z.literal('breakout-assign'), room: z.string(), to: participantId }),
 	z.object({ t: z.literal('breakout-return') }),
+	z.object({ t: z.literal('breakout-broadcast'), text: z.string().max(500) }),
 	z.object({ t: z.literal('milo-state'), state: z.enum(['off', 'standby', 'listening', 'speaking']) }),
-	z.object({ t: z.literal('e2ee-key'), epoch, keyRef: z.string() }), // SFrame sender-key announcement
+	z.object({ t: z.literal('e2ee-key'), epoch, data: z.string() }), // wrapped EpochAnnouncement (JSON)
 	z.object({ t: z.literal('sas'), emoji: z.string().max(16) }) // emoji fingerprint verify
 ]);
 export type RealtimeMessage = z.infer<typeof realtimeMessage>;

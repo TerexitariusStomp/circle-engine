@@ -1,12 +1,15 @@
 /**
- * Speech pipeline — sherpa-onnx WASM (single runtime for VAD, ASR, KWS, TTS).
- * WASM artifacts + model packs are fetched on demand; everything degrades
- * gracefully when a model isn't available locally.
+ * Speech pipeline — sherpa-onnx WASM (single runtime for VAD, ASR, TTS).
+ *
+ * The npm `sherpa-onnx` package is the Node.js build; in the browser we load
+ * the sherpa-onnx wasm-simd release packs served from /models/* (fetched by
+ * scripts/fetch-models.sh, see models/manifest.json). Each pack ships its own
+ * Emscripten loader (sherpa-onnx-wasm-main-*.js) + CJS API layer
+ * (sherpa-onnx-*.js) + a .data bundle with the model weights baked into the
+ * emscripten virtual FS.
+ *
+ * Everything degrades gracefully when a pack isn't deployed locally.
  */
-
-// sherpa-onnx ships as a CJS wasm bridge; Vite bundles it.
-// Model files (zipformer/moonshine/paraformer + vad + kws + tts voices) are
-// delivered as model packs under /models/* — see design/MODELS.md.
 
 export interface SpeechSegment {
 	text: string;
@@ -15,89 +18,151 @@ export interface SpeechSegment {
 	speaker?: number;
 }
 
-type SherpaModule = {
-	createVad: (config: unknown) => { acceptWaveform?: (f: Float32Array) => void; isDetected?: () => boolean };
-	createOnlineRecognizer: (config: unknown) => {
-		isReady?: (s: unknown) => boolean;
-		decode?: (s: unknown) => void;
-		getResult?: (s: unknown) => { text: string };
-	};
-	createKws: (config: unknown) => unknown;
-	createOfflineTts: (config: unknown) => { generate?: (o: { text: string }) => { samples: Float32Array; sampleRate: number } };
+const PACKS = {
+	vad: '/models/vad/sherpa-onnx-wasm-simd-v1.13.8-vad',
+	asr: '/models/asr-en/sherpa-onnx-wasm-simd-v1.13.7-en-asr-zipformer',
+	tts: '/models/tts-en/sherpa-onnx-wasm-simd-1.13.8-vits-piper-en_US-libritts_r-medium'
+} as const;
+
+type PackKind = keyof typeof PACKS;
+
+type SherpaModule = Record<string, unknown> & {
+	locateFile?: (path: string, dir?: string) => string;
+	onRuntimeInitialized?: () => void;
 };
 
-let mod: SherpaModule | null = null;
+type VadApi = {
+	acceptWaveform(samples: Float32Array): void;
+	isEmpty(): boolean;
+	isDetected(): boolean;
+	front(): unknown;
+	pop(): void;
+	flush(): void;
+	config: { sileroVad: { windowSize: number } };
+};
 
-export async function loadSherpa(): Promise<boolean> {
-	if (mod) return true;
-	try {
-		mod = (await import('sherpa-onnx')) as unknown as SherpaModule;
-		return true;
-	} catch {
-		return false; // wasm assets missing — caller must degrade visibly
+type AsrStream = { acceptWaveform(sampleRate: number, samples: Float32Array): void };
+type AsrApi = {
+	createStream(): AsrStream;
+	isReady(s: AsrStream): boolean;
+	decode(s: AsrStream): void;
+	isEndpoint(s: AsrStream): boolean;
+	getResult(s: AsrStream): { text: string };
+	reset(s: AsrStream): void;
+};
+
+type TtsApi = {
+	generate(o: { text: string; sid?: number; speed?: number; enableExternalBuffer?: boolean }): {
+		samples: Float32Array;
+		sampleRate: number;
+	};
+};
+
+const loaded = new Map<PackKind, Promise<SherpaModule | null>>();
+
+function injectScript(src: string): Promise<void> {
+	return new Promise((resolve, reject) => {
+		const el = document.createElement('script');
+		el.src = src;
+		el.onload = () => resolve();
+		el.onerror = () => reject(new Error(`load failed: ${src}`));
+		document.head.appendChild(el);
+	});
+}
+
+declare global {
+	interface Window {
+		Module?: SherpaModule;
+		createVad?: (Module: SherpaModule, config: unknown) => VadApi;
+		createOnlineRecognizer?: (Module: SherpaModule, config?: unknown) => AsrApi;
+		createOfflineTts?: (Module: SherpaModule) => TtsApi;
 	}
 }
 
+/**
+ * Load a sherpa pack: inject the API script, set the global `Module` the
+ * emscripten runtime expects, inject the wasm loader, await initialization.
+ * Loads are serialized — all packs share the global `Module` name.
+ */
+async function loadPack(kind: PackKind): Promise<SherpaModule | null> {
+	const dir = PACKS[kind];
+	const apiScript = { vad: 'sherpa-onnx-vad.js', asr: 'sherpa-onnx-asr.js', tts: 'sherpa-onnx-tts.js' }[kind];
+	const mainScript = `sherpa-onnx-wasm-main-${kind}.js`;
+	try {
+		await injectScript(`${dir}/${apiScript}`);
+		const Module: SherpaModule = {};
+		Module.locateFile = (path) => `${dir}/${path}`;
+		const ready = new Promise<void>((res) => (Module.onRuntimeInitialized = res));
+		window.Module = Module;
+		await injectScript(`${dir}/${mainScript}`);
+		await ready;
+		return Module;
+	} catch {
+		return null; // pack not deployed — caller degrades visibly
+	}
+}
+
+function pack(kind: PackKind): Promise<SherpaModule | null> {
+	if (!loaded.has(kind)) loaded.set(kind, loadPack(kind));
+	return loaded.get(kind)!;
+}
+
+/** Local VAD + streaming zipformer ASR → caption segments */
 export class CaptionPipeline {
-	private recognizer: ReturnType<NonNullable<SherpaModule>['createOnlineRecognizer']> | null = null;
-	private vad: ReturnType<NonNullable<SherpaModule>['createVad']> | null = null;
+	private recognizer: AsrApi | null = null;
+	private stream: AsrStream | null = null;
+	private vad: VadApi | null = null;
+	private vadBuf: Float32Array[] = [];
 	onSegment: (seg: SpeechSegment) => void = () => {};
 
-	async init(modelDir: string) {
-		if (!(await loadSherpa()) || !mod) return false;
-		this.vad = mod.createVad({
-			sileroVad: { model: `${modelDir}/silero_vad.onnx` },
-			sampleRate: 16000
-		});
-		this.recognizer = mod.createOnlineRecognizer({
-			transducer: {
-				encoder: `${modelDir}/encoder.onnx`,
-				decoder: `${modelDir}/decoder.onnx`,
-				joiner: `${modelDir}/joiner.onnx`
-			},
-			tokens: `${modelDir}/tokens.txt`,
-			modelType: 'zipformer2'
-		});
-		return true;
-	}
-
-	/** feed 16kHz mono PCM frames from a ScriptProcessor/AudioWorklet tap */
-	push(samples: Float32Array) {
-		if (!this.vad || !this.recognizer) return;
-		this.vad.acceptWaveform?.(samples);
-		if (this.recognizer.decode) {
-			const res = this.recognizer.getResult?.(null);
-			if (res?.text) this.onSegment({ text: res.text, final: false });
+	async init(): Promise<boolean> {
+		const [vadMod, asrMod] = [await pack('vad'), await pack('asr')];
+		if (asrMod && window.createOnlineRecognizer) {
+			this.recognizer = window.createOnlineRecognizer(asrMod);
+			this.stream = this.recognizer.createStream();
 		}
+		if (vadMod && window.createVad) {
+			this.vad = window.createVad(vadMod, {
+				sileroVad: {
+					model: 'silero_vad.onnx',
+					threshold: 0.5,
+					minSpeechDuration: 0.25,
+					minSilenceDuration: 0.5,
+					maxSpeechDuration: 20,
+					windowSize: 512
+				},
+				sampleRate: 16000,
+				numThreads: 1,
+				debug: false
+			});
+		}
+		return this.recognizer !== null;
 	}
-}
 
-/** spoken "Milo"/"stop" keyword spotting via sherpa KWS */
-export class WakeWord {
-	private kws: unknown = null;
-	async init(modelDir: string, keywords: string[] = ['milo', 'stop milo']) {
-		if (!(await loadSherpa()) || !mod) return false;
-		this.kws = mod.createKws({
-			keywordsFile: `${modelDir}/keywords.txt`,
-			tokens: `${modelDir}/tokens.txt`
-		});
-		void keywords;
-		return this.kws !== null;
+	/** feed 16kHz mono PCM frames from an AudioWorklet/ScriptProcessor tap */
+	push(samples: Float32Array) {
+		if (!this.recognizer || !this.stream) return;
+		this.stream.acceptWaveform(16000, samples);
+		while (this.recognizer.isReady(this.stream)) this.recognizer.decode(this.stream);
+		const text = this.recognizer.getResult(this.stream).text;
+		if (this.recognizer.isEndpoint(this.stream)) {
+			this.recognizer.reset(this.stream);
+			if (text) this.onSegment({ text, final: true });
+		} else if (text) {
+			this.onSegment({ text, final: false });
+		}
 	}
 }
 
 /** local TTS for Milo's voice via sherpa VITS models */
 export class LocalTts {
-	private tts: ReturnType<NonNullable<SherpaModule>['createOfflineTts']> | null = null;
-	async init(modelDir: string) {
-		if (!(await loadSherpa()) || !mod) return false;
-		this.tts = mod.createOfflineTts({
-			model: { vits: { model: `${modelDir}/vits.onnx`, tokens: `${modelDir}/tokens.txt` }, numThreads: 2 }
-		});
+	private tts: TtsApi | null = null;
+	async init(): Promise<boolean> {
+		const mod = await pack('tts');
+		if (mod && window.createOfflineTts) this.tts = window.createOfflineTts(mod);
 		return this.tts !== null;
 	}
-	speak(text: string): Float32Array | null {
-		const out = this.tts?.generate?.({ text });
-		return out?.samples ?? null;
+	speak(text: string): { samples: Float32Array; sampleRate: number } | null {
+		return this.tts?.generate({ text, sid: 0, speed: 1.0 }) ?? null;
 	}
 }

@@ -14,7 +14,7 @@ const trysteroConfig = { appId: 'co-intelligence-circle' };
 export interface RoomHandle {
 	selfId: string;
 	sendOp: (op: Op, sig: string, roomEpoch: number) => void;
-	sendRealtime: (msg: RealtimeMessage) => void;
+	sendRealtime: (msg: RealtimeMessage, to?: string) => void;
 	onOp: ActionReceiver<OpEnvelope>;
 	onRealtime: ActionReceiver<RealtimeMessage>;
 	makeAction: Room['makeAction'];
@@ -52,8 +52,8 @@ export function openRoom(roomSecret: string): RoomHandle {
 			});
 			sendOpRaw(envelope);
 		},
-		sendRealtime(msg) {
-			sendRt(realtimeMessage.parse(msg));
+		sendRealtime(msg, to) {
+			void sendRt(realtimeMessage.parse(msg), to ?? null);
 		},
 		onOp,
 		onRealtime,

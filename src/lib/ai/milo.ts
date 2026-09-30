@@ -9,7 +9,7 @@
 import { Wllama } from '@wllama/wllama';
 
 export interface MiloConfig {
-	modelUrl: string; // e.g. /models/qwen3-0.6b-q4.gguf — fetched into model cache
+	modelUrl: string; // e.g. /models/llm/SmolLM2-135M-Instruct-Q4_K_M.gguf
 	maxContextTokens: number;
 }
 
@@ -26,8 +26,8 @@ export class Milo {
 	async init(cfg: MiloConfig) {
 		try {
 			this.llm = new Wllama({
-				'single-thread/wllama.wasm': '/wllama/single-thread/wllama.wasm',
-				'multi-thread/wllama.wasm': '/wllama/multi-thread/wllama.wasm'
+				'single-thread/wllama.wasm': '/wllama/wllama-single.wasm',
+				'multi-thread/wllama.wasm': '/wllama/wllama-multi.wasm'
 			});
 			await this.llm.loadModelFromUrl(cfg.modelUrl, { n_ctx: cfg.maxContextTokens });
 			this.state = 'standby';

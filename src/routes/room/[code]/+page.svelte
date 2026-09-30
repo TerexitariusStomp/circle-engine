@@ -15,6 +15,8 @@
 	let notesOpen = $state(false);
 	let shareOpen = $state(false);
 	let handUp = $state(false);
+	let whisperTo = $state('');
+	let breakoutOpen = $state(false);
 	let qrEl: HTMLDivElement | undefined = $state();
 
 	const code = page.params.code ?? '';
@@ -92,6 +94,12 @@
 					<span class="badge warn" title="Browser lacks insertable streams — media is transport-encrypted only">not E2EE</span>
 				{/if}
 				{#if session.recording}<span class="badge rec">REC</span>{/if}
+				{#if session.miloState !== 'off'}
+					<span class="badge e2ee" title="Local AI participant ({session.miloState})">Milo {session.miloState}</span>
+				{/if}
+				{#if session.captionsAvailable}
+					<span class="badge" title="On-device captions active">CC</span>
+				{/if}
 				{#if session.authorityId === session.selfId}<span class="badge">host</span>{/if}
 			</span>
 		</header>
@@ -133,6 +141,29 @@
 				</div>
 			{/each}
 		</div>
+
+		{#if session.breakout}
+			<div class="breakout-banner">
+				In breakout — {session.breakout.peers.length + 1} here
+				<button class="ctl accent" onclick={() => session?.returnFromBreakout()}>Return to circle</button>
+			</div>
+		{/if}
+
+		{#if session.consentAsked}
+			<div class="breakout-banner consent" role="dialog" aria-label="Recording consent">
+				This circle wants to record. Do you consent?
+				<button class="ctl accent" onclick={() => session?.answerConsent(true)}>Consent</button>
+				<button class="ctl danger" onclick={() => session?.answerConsent(false)}>No</button>
+			</div>
+		{/if}
+
+		{#if session.pendingBreakout}
+			<div class="breakout-banner">
+				Host invited you to breakout <strong>{session.pendingBreakout}</strong>
+				<button class="ctl accent" onclick={() => { if (session?.pendingBreakout) void session.joinBreakout(session.pendingBreakout); }}>Join</button>
+				<button class="ctl" onclick={() => { if (session) session.pendingBreakout = null; }}>Stay</button>
+			</div>
+		{/if}
 
 		{#if latestCaption}
 			<div class="caption" aria-live="polite">{latestCaption.text}</div>
@@ -184,6 +215,28 @@
 			</aside>
 		{/if}
 
+		{#if breakoutOpen && session.authorityId === session.selfId}
+			<aside class="panel">
+				<header class="notes-head">Breakout rooms</header>
+				<div class="panel-body">
+					{#if session.breakoutCount === 0}
+						<button class="ctl accent" onclick={() => session?.openBreakouts(3)}>Open 3 breakouts</button>
+					{:else}
+						<p>{session.breakoutCount} breakout circles open</p>
+						{#each session.peers as p}
+							<div class="assign-row">
+								<span>{session.names[p] ?? 'peer'}</span>
+								{#each Array.from({ length: session.breakoutCount }, (_, i) => i + 1) as n}
+									<button class="ctl" onclick={() => session?.assignBreakout(p, String(n))}>{n}</button>
+								{/each}
+							</div>
+						{/each}
+						<button class="ctl danger" onclick={() => session?.closeBreakouts()}>Close all</button>
+					{/if}
+				</div>
+			</aside>
+		{/if}
+
 		{#if chatOpen}
 			<aside class="chat">
 				<div class="log">
@@ -197,10 +250,16 @@
 				<form
 					onsubmit={(e) => {
 						e.preventDefault();
-						if (chatText.trim()) session?.sendChat(chatText.trim());
+						if (chatText.trim()) session?.sendChat(chatText.trim(), whisperTo || undefined);
 						chatText = '';
 					}}
 				>
+					<select bind:value={whisperTo} aria-label="Chat target">
+						<option value="">everyone</option>
+						{#each session.peers as p}
+							<option value={p}>whisper → {session.names[p] ?? 'peer'}</option>
+						{/each}
+					</select>
 					<input bind:value={chatText} placeholder="Whisper to the circle…" />
 				</form>
 			</aside>
@@ -492,5 +551,56 @@
 		background: var(--surface);
 		padding: 0.6rem;
 		border-radius: var(--radius-sm);
+	}
+
+	.breakout-banner {
+		position: fixed;
+		top: 3rem;
+		left: 50%;
+		transform: translateX(-50%);
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		background: var(--surface);
+		border: 1px solid var(--accent);
+		border-radius: 999px;
+		padding: 0.5rem 1rem;
+		font-size: 0.9rem;
+		z-index: 15;
+	}
+	.panel {
+		position: fixed;
+		right: 0;
+		top: 0;
+		bottom: 0;
+		width: min(20rem, 85vw);
+		background: var(--surface);
+		border-left: 1px solid var(--line);
+		z-index: 12;
+	}
+	.panel-body {
+		padding: 1rem;
+		display: grid;
+		gap: 0.75rem;
+	}
+	.assign-row {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.85rem;
+	}
+	.chat form {
+		display: grid;
+		grid-template-rows: auto auto;
+		gap: 0.4rem;
+	}
+	.chat select {
+		border: 1px solid var(--line);
+		border-radius: var(--radius-sm);
+		background: var(--bg);
+		color: var(--ink);
+		padding: 0.4rem;
+		font: inherit;
+		font-size: 0.8rem;
 	}
 </style>

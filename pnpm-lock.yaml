@@ -86,9 +86,6 @@ importers:
       sframe-ratchet:
         specifier: ^0.5.8
         version: 0.5.8(@noble/curves@1.9.7)(@noble/hashes@1.8.0)
-      sherpa-onnx:
-        specifier: ^1.12.0
-        version: 1.13.8
       streamsaver:
         specifier: ^2.0.6
         version: 2.0.6
@@ -2454,9 +2451,6 @@ packages:
   shebang-regex@3.0.0:
     resolution: {integrity: sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==}
     engines: {node: '>=8'}
-
-  sherpa-onnx@1.13.8:
-    resolution: {integrity: sha512-bsZ7K55hNakFbCVIrCsuwEFLLiWa/1/KI6dXEK3CwtI6N/j/Zc1LMheo1syMJhG0e4gu7MXPwbtKfbm44BQYIg==}
 
   siginfo@2.0.0:
     resolution: {integrity: sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==}
@@ -5546,8 +5540,6 @@ snapshots:
       shebang-regex: 3.0.0
 
   shebang-regex@3.0.0: {}
-
-  sherpa-onnx@1.13.8: {}
 
   siginfo@2.0.0: {}
 

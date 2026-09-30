@@ -4,8 +4,7 @@ export default defineConfig({
 	testDir: 'e2e',
 	timeout: 90_000,
 	use: {
-		baseURL: 'http://localhost:4173',
-		permissions: ['camera', 'microphone']
+		baseURL: 'http://localhost:4173'
 	},
 	webServer: {
 		command: 'pnpm build && pnpm preview --port 4173',
@@ -17,6 +16,7 @@ export default defineConfig({
 			name: 'chromium',
 			use: {
 				browserName: 'chromium',
+				permissions: ['camera', 'microphone'],
 				launchOptions: {
 					args: [
 						'--use-fake-device-for-media-stream',

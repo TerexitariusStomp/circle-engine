@@ -1,116 +1,180 @@
 import {
+	RoomRatchet,
 	FrameCryptor,
 	newIdentity,
 	supportsSFrame,
-	computeSas,
 	buildPeerIndexMap,
-	type PeerIndex,
+	type PeerIdentity,
+	type EpochAnnouncement,
+	type EpochParams,
 	type SasData,
-	type EpochParams
+	type PeerIndex
 } from 'sframe-ratchet';
-import { SimpleKex } from 'sframe-ratchet/kex-simple';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import type { RoomHandle } from '../net/room';
 
 /**
- * E2EE via SFrame (RFC 9605) — sframe-ratchet owns the frame crypto and the
- * insertable-streams worker; SimpleKex derives epoch chain keys from the room
- * secret (entropy lives in the URL fragment — never transmitted).
+ * E2EE via SFrame (RFC 9605) with forward secrecy.
  *
- * Membership change -> epoch++ -> rotateEpoch -> setEpoch on every cryptor.
- * Authority peer cannot decrypt: media keys derive from the room secret, which
- * all peers hold equally — there is no privileged decryption position.
+ * Key exchange: each peer generates an ephemeral X25519 IdentityKeyPair and
+ * publishes its public key in `hello.cap[1]`. The lexicographically smallest
+ * peer is the epoch author (same rule as authority election): it mints a fresh
+ * random ChainKey per membership change and wraps it per-recipient under an
+ * ECDH(ephemeral) — the RoomRatchet "simple" distribution protocol. Ops travel
+ * on the data channel; media frames are encrypted end-to-end per sender.
  *
- * Unsupported browser -> active=false -> UI shows "not E2EE". Never silent.
+ * Forward secrecy: every join/leave rotates the epoch chain key; departed
+ * members cannot decrypt post-departure frames. Room secret in the URL
+ * fragment gates *membership*; media keys never derive from it.
  */
+
+function announcementToJson(a: EpochAnnouncement): string {
+	return JSON.stringify({
+		...a,
+		keyWrapped: bytesToHex(a.keyWrapped),
+		iv: bytesToHex(a.iv),
+		ephemeralPub: bytesToHex(a.ephemeralPub)
+	});
+}
+function announcementFromJson(s: string): EpochAnnouncement {
+	const o = JSON.parse(s);
+	return { ...o, keyWrapped: hexToBytes(o.keyWrapped), iv: hexToBytes(o.iv), ephemeralPub: hexToBytes(o.ephemeralPub) };
+}
 
 export class E2EESession {
 	readonly supported = supportsSFrame();
-	private kex: SimpleKex;
+	private ratchet: RoomRatchet;
 	private cryptors = new Map<string, FrameCryptor>();
 	private worker?: Worker;
-	private chainKey: Uint8Array | null = null;
-	private peerIndexMap: Record<string, PeerIndex> = {};
-	private _epoch = -1;
+	private members = new Map<string, PeerIdentity>(); // peerId -> identity
 	active = false;
 
-	constructor(
-		private room: RoomHandle,
-		roomSecret: string
-	) {
-		this.kex = new SimpleKex({
-			sharedSecret: roomSecret,
-			// acknowledged: SimpleKex has no forward secrecy — RoomRatchet (MLS-style
-			// wrapped epochs) is the hardened upgrade path tracked in docs/SECURITY-MODEL.md
-			acknowledgeInsecure: true
-		});
-		newIdentity(room.selfId); // session identity available for SAS/verify flows
+	constructor(private room: RoomHandle) {
+		this.ratchet = new RoomRatchet({ identity: newIdentity(room.selfId) });
 		if (this.supported) {
 			this.worker = new Worker(new URL('sframe-ratchet/worker', import.meta.url), { type: 'module' });
 		}
 	}
 
+	/** our X25519 public key hex — put in hello.cap[1] */
+	get publicKeyHex() {
+		return bytesToHex(this.ratchet.getIdentity().publicKey);
+	}
 	get epoch() {
-		return this._epoch;
+		return this.ratchet.epoch;
+	}
+	get selfPeerIndex() {
+		return this.ratchet.selfPeerIndex;
 	}
 
-	/** (re)key for the current membership set. Deterministic on every client. */
-	async onMembership(peerIds: string[]) {
-		if (!this.supported) return;
-		const ids = [...peerIds].sort();
-		const nextEpoch = this._epoch + 1;
-		this.chainKey =
-			this._epoch < 0 || this.chainKey === null
-				? await this.kex.initialEpoch()
-				: this.kex.rotateEpoch(this.chainKey, nextEpoch);
-		this.peerIndexMap = buildPeerIndexMap(ids);
-		this._epoch = nextEpoch;
+	/** register a peer's identity (from hello) — does not yet trigger rotation */
+	addPeerIdentity(peerId: string, x25519PubHex: string) {
+		this.members.set(peerId, { peerId, publicKey: hexToBytes(x25519PubHex) });
+	}
 
-		const params: EpochParams = {
-			epoch: this._epoch,
-			peerIndexMap: this.peerIndexMap,
-			chainKey: this.chainKey
-		};
-		for (const c of this.cryptors.values()) await c.setEpoch(params);
+	/**
+	 * Membership changed. If we are the epoch author (lex-min peer id), mint
+	 * announcements and return {peerId -> json} for targeted delivery.
+	 * Non-authors simply wait for their announcement.
+	 */
+	async onMembershipChange(kind: 'join' | 'leave', peerId: string): Promise<Map<string, string>> {
+		const out = new Map<string, string>();
+		if (!this.supported) return out;
+		if (kind === 'leave') this.members.delete(peerId);
+
+		const allIds = [this.room.selfId, ...this.members.keys()].sort();
+		const iAmAuthor = allIds[0] === this.room.selfId;
+		if (!iAmAuthor) return out;
+
+		const members: PeerIdentity[] = [
+			{ peerId: this.room.selfId, publicKey: this.ratchet.getIdentity().publicKey },
+			...this.members.values()
+		];
+		let announcements: EpochAnnouncement[] = [];
+		if (kind === 'join' && this.ratchet.epoch >= 0 && this.members.has(peerId)) {
+			announcements = await this.ratchet.rotateOnMemberChange({ kind: 'join', peer: this.members.get(peerId)! });
+		} else if (kind === 'leave') {
+			announcements = await this.ratchet.rotateOnMemberChange({ kind: 'leave', peerId });
+		} else {
+			announcements = await this.ratchet.startNewEpoch(members);
+		}
+		for (const a of announcements) out.set(a.forPeer, announcementToJson(a));
+
+		await this.applyEpochToCryptors();
+		this.active = true;
+		return out;
+	}
+
+	/** inbound wrapped epoch announcement (targeted to us) */
+	async consumeAnnouncement(json: string) {
+		await this.ratchet.consumeEpochAnnouncement(announcementFromJson(json));
+		await this.applyEpochToCryptors();
 		this.active = true;
 	}
 
-	attachSender(peerId: string, sender: RTCRtpSender) {
-		if (!this.supported || !this.worker || !this.chainKey) return;
+	private epochParams(): EpochParams | null {
+		const epoch = this.ratchet.epoch;
+		const chainKey = this.ratchet.getEpochChainKey(epoch);
+		const peerIndexMap = this.ratchet.getEpochPeerIndexMap(epoch);
+		if (!chainKey || !peerIndexMap) return null;
+		return { epoch, peerIndexMap, chainKey };
+	}
+
+	private async applyEpochToCryptors() {
+		const params = this.epochParams();
+		if (!params) return;
+		for (const c of this.cryptors.values()) await c.setEpoch(params);
+	}
+
+	private makeCryptor(role: 'sender' | 'receiver', peerId: string): FrameCryptor | null {
+		if (!this.supported || !this.worker) return null;
+		const myIndex = this.ratchet.selfPeerIndex ?? 0;
 		const c = new FrameCryptor({
 			worker: this.worker,
-			role: 'sender',
+			role,
 			peerId,
-			peerIndex: this.peerIndexMap[this.room.selfId] ?? 0
+			peerIndex: role === 'sender' ? myIndex : (this.peerIndexOf(peerId) ?? 0),
+			onWorkerError: (d) => console.warn('[sframe]', d)
 		});
-		void c.setEpoch({ epoch: this._epoch, peerIndexMap: this.peerIndexMap, chainKey: this.chainKey });
+		const params = this.epochParams();
+		if (params) void c.setEpoch(params);
+		return c;
+	}
+
+	private peerIndexOf(peerId: string): PeerIndex | undefined {
+		const map = this.ratchet.getEpochPeerIndexMap(this.ratchet.epoch) ?? buildPeerIndexMap([this.room.selfId, ...this.members.keys()]);
+		return map[peerId];
+	}
+
+	attachSender(peerId: string, sender: RTCRtpSender) {
+		const c = this.makeCryptor('sender', peerId);
+		if (!c) return;
 		c.attachSender(sender);
 		this.cryptors.set(`s:${peerId}`, c);
 	}
 
 	attachReceiver(peerId: string, receiver: RTCRtpReceiver) {
-		if (!this.supported || !this.worker || !this.chainKey) return;
-		const c = new FrameCryptor({
-			worker: this.worker,
-			role: 'receiver',
-			peerId,
-			peerIndex: this.peerIndexMap[peerId] ?? 0
-		});
-		void c.setEpoch({ epoch: this._epoch, peerIndexMap: this.peerIndexMap, chainKey: this.chainKey });
+		const c = this.makeCryptor('receiver', peerId);
+		if (!c) return;
 		c.attachReceiver(receiver);
 		this.cryptors.set(`r:${peerId}`, c);
 	}
 
-	/** SAS emoji fingerprint over the epoch chain key for MITM verify UI */
-	sas(): Promise<SasData> {
-		if (!this.chainKey) return Promise.reject(new Error('no epoch yet'));
-		return computeSas(this.chainKey);
+	/** SAS emoji for MITM verification — per-peer DH transcript */
+	sasFor(peerId: string): SasData | null {
+		return this.ratchet.getSas(peerId);
+	}
+	markSasVerified(peerId: string) {
+		this.ratchet.markSasVerified(peerId, true);
+	}
+	onSasReady(cb: (peerId: string) => void) {
+		return this.ratchet.onSasReady(cb);
 	}
 
 	dispose() {
 		for (const c of this.cryptors.values()) c.detach();
 		this.cryptors.clear();
 		this.worker?.terminate();
-		this.chainKey?.fill(0);
 		this.active = false;
 	}
 }
