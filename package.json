@@ -15,7 +15,8 @@
     "models:fetch": "bash scripts/fetch-models.sh",
     "models:fetch:heavy": "FETCH_HEAVY=1 bash scripts/fetch-models.sh",
     "probe": "node probe-flows.mjs",
-    "probe:pw": "node probe-pw.mjs"
+    "probe:pw": "node probe-pw.mjs",
+    "build:pages": "CIC_BASE=/circle-engine vite build && rm -rf build/models && cp build/index.html build/404.html && touch build/.nojekyll"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
@@ -52,6 +53,7 @@
     "dompurify": "^3.2.3",
     "emoji-picker-element": "^1.26.0",
     "flexsearch": "^0.8.0",
+    "libarchive.js": "^2.0.2",
     "linkify-it": "^5.0.0",
     "lucide-svelte": "^0.469.0",
     "marked": "^15.0.0",

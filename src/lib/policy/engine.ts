@@ -7,6 +7,8 @@ import type { Op, RoomState } from '../wire/messages';
  * Every client evaluates every op against these rules before applying it.
  */
 
+import { base } from '$app/paths';
+
 type Policy = { evaluate(input: unknown, entrypoint?: string): { result: unknown }[] };
 
 let policy: Policy | null = null;
@@ -15,7 +17,7 @@ let policyPromise: Promise<void> | null = null;
 export function initPolicy(): Promise<void> {
 	policyPromise ??= (async () => {
 		try {
-			const wasm = await fetch('/policy/cic.wasm').then((r) => r.arrayBuffer());
+			const wasm = await fetch(`${base}/policy/cic.wasm`).then((r) => r.arrayBuffer());
 			policy = await loadPolicy(wasm);
 			console.debug('[engine] policy loaded');
 		} catch (e) {

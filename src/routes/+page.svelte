@@ -6,12 +6,13 @@
 	 * in a privacy-preserving build). "Log in" links to /join, our entry.
 	 */
 	import { onMount } from 'svelte';
+	import { base } from '$app/paths';
 
 	let markup = $state('');
 	let host: HTMLElement;
 
 	onMount(async () => {
-		const html = await (await fetch('/site/index.html')).text();
+		const html = await (await fetch(`${base}/site/index.html`)).text();
 		const doc = new DOMParser().parseFromString(html, 'text/html');
 		// the page's styles live in head links — hoist them into our head
 		for (const link of doc.querySelectorAll<HTMLLinkElement>('link[rel="stylesheet"], link[href*=".css"]')) {

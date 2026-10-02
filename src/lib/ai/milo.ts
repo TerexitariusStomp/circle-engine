@@ -7,6 +7,7 @@
  */
 
 import { Wllama } from '@wllama/wllama';
+import { WLLAMA_WASM } from './translate';
 
 export interface MiloConfig {
 	modelUrl: string; // e.g. /models/llm/SmolLM2-135M-Instruct-Q4_K_M.gguf
@@ -25,10 +26,7 @@ export class Milo {
 
 	async init(cfg: MiloConfig) {
 		try {
-			this.llm = new Wllama({
-				'single-thread/wllama.wasm': '/wllama/wllama-single.wasm',
-				'multi-thread/wllama.wasm': '/wllama/wllama-multi.wasm'
-			});
+			this.llm = new Wllama(WLLAMA_WASM);
 			// wllama fetches inside a blob worker — relative URLs don't resolve there
 			await this.llm.loadModelFromUrl(new URL(cfg.modelUrl, location.origin).href, { n_ctx: cfg.maxContextTokens });
 			this.state = 'standby';

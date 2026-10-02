@@ -4,8 +4,27 @@
  * Lazy: the ~100MB GGUF loads on first translation request, not on join.
  */
 import { Wllama } from '@wllama/wllama';
+import { base } from '$app/paths';
+import manifest from '../../../models/manifest.json';
 
-const MODEL_URL = '/models/llm/SmolLM2-135M-Instruct-Q4_K_M.gguf';
+const LOCAL_MODEL = `${base}/models/llm/SmolLM2-135M-Instruct-Q4_K_M.gguf`;
+const REMOTE_MODEL = (manifest.packs as Record<string, { url?: string }>)['llm']?.url ?? '';
+
+let modelUrlCache: string | null = null;
+/** local weights when vendored (dev/self-host), upstream HF resolve URL otherwise */
+export async function llmModelUrl(): Promise<string> {
+	if (modelUrlCache) return modelUrlCache;
+	const local = new URL(LOCAL_MODEL, location.origin).href;
+	modelUrlCache = await fetch(local, { method: 'HEAD' })
+		.then((r) => (r.ok ? local : REMOTE_MODEL))
+		.catch(() => REMOTE_MODEL);
+	return modelUrlCache;
+}
+
+export const WLLAMA_WASM = {
+	'single-thread/wllama.wasm': `${base}/wllama/wllama-single.wasm`,
+	'multi-thread/wllama.wasm': `${base}/wllama/wllama-multi.wasm`
+} as const;
 
 const LANG_NAMES: Record<string, string> = {
 	en: 'English', es: 'Spanish', fr: 'French', de: 'German', it: 'Italian',
@@ -23,13 +42,10 @@ async function getLlm(): Promise<Wllama | null> {
 	if (!loading) {
 		loading = (async () => {
 			try {
-				const w = new Wllama({
-					'single-thread/wllama.wasm': '/wllama/wllama-single.wasm',
-					'multi-thread/wllama.wasm': '/wllama/wllama-multi.wasm'
-				});
+				const w = new Wllama(WLLAMA_WASM);
 				// wllama fetches inside a blob worker — relative URLs don't
 				// resolve there, so hand it an absolute one
-				await w.loadModelFromUrl(new URL(MODEL_URL, location.origin).href, { n_ctx: 2048 });
+				await w.loadModelFromUrl(await llmModelUrl(), { n_ctx: 2048 });
 				llm = w;
 				return w;
 			} catch (e) {

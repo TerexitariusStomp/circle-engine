@@ -63,6 +63,9 @@ importers:
       flexsearch:
         specifier: ^0.8.0
         version: 0.8.212
+      libarchive.js:
+        specifier: ^2.0.2
+        version: 2.0.2
       linkify-it:
         specifier: ^5.0.0
         version: 5.0.2
@@ -2095,6 +2098,9 @@ packages:
     resolution: {integrity: sha512-vh+TiejVy8Xm+hCdnRfn9BthGNvNUZdEXltNjVZL3TzRIKP3s1lnQh8pWd/Q0wCgY0FPAGVVjFF4ZiHUV3LFgA==}
     engines: {node: '>=16'}
     hasBin: true
+
+  libarchive.js@2.0.2:
+    resolution: {integrity: sha512-JHb+P4suNSjvz/dMdRgOe7JAxluXJeialzSFkKHU5y0ZK+m175drPOaIYW6I9WXSDcPcQ13eCUgMnpgY0ggmoQ==}
 
   libp2p@2.1.8:
     resolution: {integrity: sha512-OzUUgAs6983lP2FDqc3oABeUAyvd3iJ/BlYjwmjddpUwQO6gemuJFpWujagj2Vtj+oPosGrrPGWqv+WPnTkHUA==}
@@ -5209,6 +5215,10 @@ snapshots:
   lib0@0.2.119:
     dependencies:
       isomorphic.js: 0.2.5
+
+  libarchive.js@2.0.2:
+    dependencies:
+      comlink: 4.4.2
 
   libp2p@2.1.8:
     dependencies:

@@ -12,6 +12,7 @@ import { Recorder } from '../rec/recorder';
 import { NotesDoc } from '../notes/notes';
 import { BreakoutSession } from '../net/breakout.svelte';
 import { LocalTts } from '../ai/speech';
+import { llmModelUrl } from '../ai/translate';
 import { Milo } from '../ai/milo';
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { noteArtifact } from '../bridge/artifacts';
@@ -820,7 +821,7 @@ export class RoomSession {
 		if (this.miloInitStarted || this.roles?.['milo-brain'] !== this.selfId) return;
 		this.miloInitStarted = true;
 		const ok = await this.milo.init({
-			modelUrl: '/models/llm/SmolLM2-135M-Instruct-Q4_K_M.gguf',
+			modelUrl: await llmModelUrl(),
 			maxContextTokens: 2048
 		});
 		this.miloState = this.milo.state;

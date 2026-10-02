@@ -6,17 +6,30 @@ const config = {
 	preprocess: vitePreprocess(),
 	kit: {
 		adapter: adapter({ fallback: 'index.html' }),
+		// CIC_BASE: mount path for static hosts that serve under a prefix
+		// (GitHub Pages project site → '/circle-engine'). Empty in dev/root deploys.
+		paths: { base: process.env.CIC_BASE ?? '' },
 		csp: {
 			mode: 'auto',
 			directives: {
 				'default-src': ['self'],
 				// connect-src: same-origin + rendezvous relays (nostr/mqtt/bittorrent)
-				// — all wss endpoints. Models/wasm/brand assets are same-origin; the
-				// dotlottie CDN fetch is shimmed to the vendored copy in install.ts.
-				// No https: — nothing leaves this origin except relay websockets.
-				'connect-src': ['self', 'wss:'],
+				// — all wss endpoints + model-pack remotes. GitHub release
+				// downloads redirect to *.githubusercontent.com; HF LFS to
+				// *.hf.co CDNs. The dotlottie CDN fetch is shimmed to the
+				// vendored copy in install.ts.
+				'connect-src': [
+					'self',
+					'wss:',
+					'https://github.com',
+					'https://*.githubusercontent.com',
+					'https://huggingface.co',
+					'https://*.hf.co'
+				],
 				// wasm-unsafe-eval: sherpa-onnx/opa-wasm/wllama instantiate WASM modules
-				'script-src': ['self', 'wasm-unsafe-eval'],
+				// blob:: sherpa scripts may be injected via blob URLs when packs are
+				// fetched+extracted from upstream remotes instead of /models
+				'script-src': ['self', 'wasm-unsafe-eval', 'blob:'],
 				// style-src: Svelte transitions + qr-code-styling inject inline styles
 				'style-src': ['self', 'unsafe-inline'],
 				'worker-src': ['self', 'blob:'],

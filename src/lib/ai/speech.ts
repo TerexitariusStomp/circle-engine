@@ -18,11 +18,29 @@ export interface SpeechSegment {
 	speaker?: number;
 }
 
+import { base } from '$app/paths';
+import manifest from '../../../models/manifest.json';
+
 const PACKS = {
-	vad: '/models/vad/sherpa-onnx-wasm-simd-v1.13.8-vad',
-	asr: '/models/asr-en/sherpa-onnx-wasm-simd-v1.13.7-en-asr-zipformer',
-	tts: '/models/tts-en/sherpa-onnx-wasm-simd-1.13.8-vits-piper-en_US-libritts_r-medium'
+	vad: { dir: `${base}/models/vad/sherpa-onnx-wasm-simd-v1.13.8-vad`, remote: '' },
+	asr: {
+		dir: `${base}/models/asr-en/sherpa-onnx-wasm-simd-v1.13.7-en-asr-zipformer`,
+		remote: ''
+	},
+	tts: {
+		dir: `${base}/models/tts-en/sherpa-onnx-wasm-simd-1.13.8-vits-piper-en_US-libritts_r-medium`,
+		remote: ''
+	}
 } as const;
+
+// upstream tarballs (models/manifest.json) — used when the extracted pack
+// isn't served locally (e.g. GitHub Pages deploys, where 400MB of weights
+// can't be committed)
+const REMOTE_KEYS = { vad: 'vad', asr: 'asr-en', tts: 'tts-en' } as const;
+for (const [kind, mkey] of Object.entries(REMOTE_KEYS)) {
+	const remote = (manifest.packs as Record<string, { url?: string }>)[mkey]?.url;
+	if (remote) (PACKS as Record<string, { remote: string }>)[kind].remote = remote;
+}
 
 type PackKind = keyof typeof PACKS;
 
@@ -81,21 +99,64 @@ declare global {
  * emscripten runtime expects, inject the wasm loader, await initialization.
  * Loads are serialized — all packs share the global `Module` name.
  */
+/**
+ * Fetch an upstream pack tarball (manifest URL) and extract it in-browser —
+ * libarchive handles tar.bz2. Extracted entries become blob: URLs keyed by
+ * basename so the same injectScript/locateFile flow works unchanged. The raw
+ * tarball is persisted in CacheStorage so the ~100-200MB download happens once.
+ */
+async function fetchRemotePack(url: string): Promise<Record<string, string>> {
+	const cache = await caches.open('cic-model-packs');
+	const hit = await cache.match(url);
+	const res = hit ?? (await fetch(url));
+	if (!res.ok) throw new Error(`pack fetch ${res.status}`);
+	if (!hit) void cache.put(url, res.clone());
+	const blob = await res.blob();
+	const { Archive } = await import('libarchive.js');
+	Archive.init({ workerUrl: `${base}/libarchive/worker-bundle.js` });
+	const extracted = await (
+		await Archive.open(new File([blob], 'pack.tar.bz2'))
+	).getFilesArray();
+	const map: Record<string, string> = {};
+	for (const f of extracted) {
+		const file =
+			f.file instanceof File
+				? f.file
+				: await (f.file as { extract(): Promise<File>; name: string }).extract();
+		map[file.name] = URL.createObjectURL(file);
+	}
+	return map;
+}
+
 async function loadPack(kind: PackKind): Promise<SherpaModule | null> {
-	const dir = PACKS[kind];
+	const packCfg = PACKS[kind];
 	const apiScript = { vad: 'sherpa-onnx-vad.js', asr: 'sherpa-onnx-asr.js', tts: 'sherpa-onnx-tts.js' }[kind];
 	const mainScript = `sherpa-onnx-wasm-main-${kind}.js`;
 	try {
-		await injectScript(`${dir}/${apiScript}`);
+		await injectScript(`${packCfg.dir}/${apiScript}`);
 		const Module: SherpaModule = {};
-		Module.locateFile = (path) => `${dir}/${path}`;
+		Module.locateFile = (path) => `${packCfg.dir}/${path}`;
 		const ready = new Promise<void>((res) => (Module.onRuntimeInitialized = res));
 		window.Module = Module;
-		await injectScript(`${dir}/${mainScript}`);
+		await injectScript(`${packCfg.dir}/${mainScript}`);
 		await ready;
 		return Module;
 	} catch {
-		return null; // pack not deployed — caller degrades visibly
+		if (!packCfg.remote) return null; // pack not deployed — caller degrades visibly
+	}
+	try {
+		const files = await fetchRemotePack(packCfg.remote);
+		await injectScript(files[apiScript]);
+		const Module: SherpaModule = {};
+		Module.locateFile = (path) => files[path.split('/').pop() ?? path] ?? path;
+		const ready = new Promise<void>((res) => (Module.onRuntimeInitialized = res));
+		window.Module = Module;
+		await injectScript(files[mainScript]);
+		await ready;
+		return Module;
+	} catch (e) {
+		console.warn(`[speech] remote pack ${kind} failed`, e);
+		return null;
 	}
 }
 
@@ -169,11 +230,28 @@ export class LocalTts {
 	private queue: Promise<unknown> = Promise.resolve();
 	private pending: ((a: { samples: Float32Array; sampleRate: number } | null) => void) | null = null;
 
+	private async makeWorker(): Promise<Worker> {
+		const name = 'sherpa-onnx-tts.worker.js';
+		const local = `${PACKS.tts.dir}/${name}`;
+		const localOk = await fetch(local, { method: 'HEAD' }).then((r) => r.ok).catch(() => false);
+		if (localOk) return new Worker(local);
+		// remote: the worker importScripts its siblings and locates wasm/.data
+		// relative to its own URL — rewrite both to the extracted blob map
+		const files = await fetchRemotePack(PACKS.tts.remote);
+		let src = await (await fetch(files[name])).text();
+		src = src
+			.replace(/importScripts\((['"])([^'"]+)\1\)/g, (_m, q, p) => `importScripts(${q}${files[p] ?? p}${q})`)
+			.replace('return scriptDirectory + path', 'return (__PACK__[path.split("/").pop()] ?? scriptDirectory + path)');
+		return new Worker(
+			URL.createObjectURL(new Blob([`const __PACK__=${JSON.stringify(files)};\n${src}`], { type: 'text/javascript' }))
+		);
+	}
+
 	async init(): Promise<boolean> {
 		if (this.worker) return true;
 		console.debug('[stt] tts init start');
 		try {
-			const w = new Worker(`${PACKS.tts}/sherpa-onnx-tts.worker.js`);
+			const w = await this.makeWorker();
 			const ok = await new Promise<boolean>((resolve) => {
 				const timer = setTimeout(() => resolve(false), 180_000);
 				w.onmessage = (e) => {

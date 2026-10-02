@@ -11,6 +11,7 @@
  */
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { sha256 } from '@noble/hashes/sha2.js';
+import { base } from '$app/paths';
 
 interface Challenge {
 	challengeId: string;
@@ -66,7 +67,7 @@ export function startLink(roomCode: string): Challenge & { loginUrl: string } {
 	try {
 		localStorage.setItem(`cic.link.${challengeId}`, JSON.stringify({ roomCode, expiresAt: ch.expiresAt }));
 	} catch {}
-	return { ...ch, loginUrl: `/account/link?ch=${challengeId}` };
+	return { ...ch, loginUrl: `${base}/account/link?ch=${challengeId}` };
 }
 
 /** room tab: prod account-link-poll{challengeId,pollSecret} → accountId | null */

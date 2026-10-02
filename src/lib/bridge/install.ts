@@ -12,6 +12,7 @@
  *   other same-origin /ws/* → refused (nothing claims those paths)
  *   external wss://      → real WebSocket passthrough (browser enforces CSP)
  */
+import { base } from '$app/paths';
 import { RoomSocket } from './roomBridge.svelte';
 import { CaptionSocket } from './stt';
 import { LocalSocket } from './localSocket';
@@ -70,7 +71,7 @@ function patchFetch() {
 		// dotlottie-player.wasm — prod hardcodes cdn.jsdelivr.net/unpkg URLs;
 		// serve the vendored copy instead so nothing leaves the origin
 		if (url.pathname.endsWith('/dotlottie-player.wasm'))
-			return orig('/dotlottie-player.wasm', init);
+			return orig(`${base}/dotlottie-player.wasm`, init);
 
 		if (url.origin !== location.origin) return orig(input, init); // external → real fetch (CSP-bound)
 		const path = url.pathname;
@@ -91,7 +92,7 @@ function patchFetch() {
 		// brand assets — real local files
 		if (path.startsWith('/api/site-brand/')) {
 			const name = path.split('/').pop() ?? 'symbol-light';
-			return orig(`/brand/${name === 'symbol-dark' ? 'logo.svg' : `${name}.png`}`, init);
+			return orig(`${base}/brand/${name === 'symbol-dark' ? 'logo.svg' : `${name}.png`}`, init);
 		}
 
 		// telemetry sinks — accepted locally, stored nowhere else
