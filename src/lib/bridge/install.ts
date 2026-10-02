@@ -35,7 +35,22 @@ export function installCicShims(roomKey?: string) {
 	seedLocalStorage();
 	patchFetch();
 	patchWebSocket(roomKey);
+	// test seam: probes inject frames through the same entry path the app's own
+	// ws client uses (JSON → bridge.command) — real dispatch, no DOM flakiness
+	(window as unknown as { __cicSend: (code: string, frame: Record<string, unknown>) => void }).__cicSend =
+		(code, frame) => roomSockets.get(code)?.send(JSON.stringify(frame));
+	(window as unknown as { __cicDebug: (code: string) => unknown }).__cicDebug =
+		(code) => roomSockets.get(code)?.session?.debugView() ?? null;
 }
+
+/**
+ * Production room links normally carry a dashboard-minted ?grant= — an opener
+ * capability the server validates on hello. There is no dashboard here and the
+ * local bridge accepts grant-less hellos, so we deliberately do NOT mint one:
+ * a grant also tells prod "this visitor has an account" (it hides the
+ * drawer's "Log in" row), and the local account-link flow is the real feature.
+ * A bare link = an unauthenticated guest, matching production semantics.
+ */
 
 function seedLocalStorage() {
 	try {
@@ -51,6 +66,12 @@ function patchFetch() {
 	const orig = window.fetch.bind(window);
 	window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 		const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
+
+		// dotlottie-player.wasm — prod hardcodes cdn.jsdelivr.net/unpkg URLs;
+		// serve the vendored copy instead so nothing leaves the origin
+		if (url.pathname.endsWith('/dotlottie-player.wasm'))
+			return orig('/dotlottie-player.wasm', init);
+
 		if (url.origin !== location.origin) return orig(input, init); // external → real fetch (CSP-bound)
 		const path = url.pathname;
 
@@ -141,7 +162,7 @@ function patchWebSocket(roomKey?: string) {
 				if (u.pathname.startsWith('/ws/caption/')) {
 					const code = u.pathname.split('/ws/caption/')[1].split('?')[0];
 					const room = roomSockets.get(decodeURIComponent(code));
-					return new CaptionSocket(u.href, room?.emitter() ?? { frame: () => {} }, room?.session ?? null, room?.selfId ?? '') as unknown as WebSocket;
+					return new CaptionSocket(u.href, room?.emitter() ?? { frame: () => {} }, room?.session ?? null, room?.selfId ?? '', 'en', room?.captionSub ?? 0) as unknown as WebSocket;
 				}
 				return new RefusedSocket(u.href) as unknown as WebSocket;
 			}

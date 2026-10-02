@@ -10,9 +10,11 @@ const config = {
 			mode: 'auto',
 			directives: {
 				'default-src': ['self'],
-				// connect-src: rendezvous relays (nostr/mqtt/bittorrent) are arbitrary
-				// wss endpoints; models/wasm fetch over https. No http: — never plaintext.
-				'connect-src': ['self', 'wss:', 'https:'],
+				// connect-src: same-origin + rendezvous relays (nostr/mqtt/bittorrent)
+				// — all wss endpoints. Models/wasm/brand assets are same-origin; the
+				// dotlottie CDN fetch is shimmed to the vendored copy in install.ts.
+				// No https: — nothing leaves this origin except relay websockets.
+				'connect-src': ['self', 'wss:'],
 				// wasm-unsafe-eval: sherpa-onnx/opa-wasm/wllama instantiate WASM modules
 				'script-src': ['self', 'wasm-unsafe-eval'],
 				// style-src: Svelte transitions + qr-code-styling inject inline styles
