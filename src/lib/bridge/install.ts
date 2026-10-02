@@ -74,7 +74,10 @@ function patchFetch() {
 			return orig(`${base}/dotlottie-player.wasm`, init);
 
 		if (url.origin !== location.origin) return orig(input, init); // external → real fetch (CSP-bound)
-		const path = url.pathname;
+		// on subpath deploys (GH Pages: /<repo>/) same-origin URLs carry the
+		// base prefix — strip it so bridge paths match vendored absolute calls
+		let path = url.pathname;
+		if (base && path.startsWith(`${base}/`)) path = path.slice(base.length);
 
 		// UI persistence — real localStorage-backed store
 		if (path === '/api/room-ui/themes' || path === '/api/room-ui/preferences' || path === '/api/room-ui/defaults') {
@@ -152,16 +155,17 @@ function patchWebSocket(roomKey?: string) {
 			// the production app always builds wss://{host}/ws/… even on http dev —
 			// ws/wss ↔ http/https are the same site, so compare hosts not origins
 			const local = (u.protocol === 'ws:' || u.protocol === 'wss:') && u.host === location.host;
-			console.debug('[cic-ws] open', u.pathname, local ? '(local)' : '(external)');
+			const path = base && u.pathname.startsWith(`${base}/`) ? u.pathname.slice(base.length) : u.pathname;
+			console.debug('[cic-ws] open', path, local ? '(local)' : '(external)');
 			if (local) {
-				if (u.pathname.startsWith('/ws/room/')) {
-					const code = decodeURIComponent(u.pathname.split('/ws/room/')[1]);
+				if (path.startsWith('/ws/room/')) {
+					const code = decodeURIComponent(path.split('/ws/room/')[1]);
 					const sock = new RoomSocket(u.href, roomKey);
 					roomSockets.set(code, sock);
 					return sock as unknown as WebSocket;
 				}
-				if (u.pathname.startsWith('/ws/caption/')) {
-					const code = u.pathname.split('/ws/caption/')[1].split('?')[0];
+				if (path.startsWith('/ws/caption/')) {
+					const code = path.split('/ws/caption/')[1].split('?')[0];
 					const room = roomSockets.get(decodeURIComponent(code));
 					return new CaptionSocket(u.href, room?.emitter() ?? { frame: () => {} }, room?.session ?? null, room?.selfId ?? '', 'en', room?.captionSub ?? 0) as unknown as WebSocket;
 				}
